@@ -1,4 +1,4 @@
-# Product Requirements Document: MCP-Probe
+# Product Requirements Document: MCP-Probe-Pilot
 
 > **Automated Testing Framework for MCP Server Validation**
 
@@ -20,11 +20,11 @@ Existing tools have critical limitations:
 
 ### Solution
 
-**MCP-Probe** is an automated testing framework that validates MCP server correctness by treating the server as the System Under Test (SUT) with deterministic, reproducible test execution.
+**MCP-Probe-Pilot** is an automated testing framework that validates MCP server correctness by treating the server as the System Under Test (SUT) with deterministic, reproducible test execution.
 
-**Key Innovation:** Existing frameworks evaluate whether agents can *use* MCP servers correctly. MCP-Probe inverts this—it evaluates whether servers *behave* correctly, using a deterministic client as the test fixture.
+**Key Innovation:** Existing frameworks evaluate whether agents can *use* MCP servers correctly. MCP-Probe-Pilot inverts this—it evaluates whether servers *behave* correctly, using a deterministic client as the test fixture.
 
-| Traditional Approach | MCP-Probe Approach |
+| Traditional Approach | MCP-Probe-Pilot Approach |
 |---------------------|-------------------|
 | Agent = SUT | Server = SUT |
 | Server = static fixture | Agent/Client = static fixture |
@@ -172,7 +172,7 @@ The following are explicitly **not** part of this project:
 |----------|-----------|
 | Security testing (injection attacks, auth bypass) | Deprioritized for initial implementation; may be future work |
 | Non-Python MCP servers | Framework targets Python implementations only |
-| Testing the LLM/Agent | Existing tools cover this; MCP-Probe tests the *server* |
+| Testing the LLM/Agent | Existing tools cover this; MCP-Probe-Pilot tests the *server* |
 | Real-time monitoring/alerting | This is a testing framework, not an observability tool |
 | GUI-based test builder | CLI-first approach; visual tooling is future work |
 | Performance/load testing | Focus is correctness, not throughput |
@@ -185,7 +185,7 @@ The following are explicitly **not** part of this project:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                     MCP-Probe Framework                      │
+│                     MCP-Probe-Pilot Framework                      │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┐    ┌─────────────┐    ┌─────────────────┐  │
 │  │  Discovery  │ →  │  Test Gen   │ →  │  Test Executor  │  │
