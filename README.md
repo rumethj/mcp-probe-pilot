@@ -43,8 +43,8 @@ Create a `mcp-probe-service-properties.json` file in your MCP server's root dire
   "server_command": "python -m my_server",
   "transport": "stdio",
   "regenerate_tests": false,
-  "llm_provider": "openai",
-  "llm_model": "gpt-4"
+  "llm_provider": "gemini",
+  "llm_model": "gemini-2.0-flash"
 }
 ```
 
@@ -56,20 +56,77 @@ Create a `mcp-probe-service-properties.json` file in your MCP server's root dire
 | `server_command` | string | *required* | Command to start the MCP server |
 | `transport` | string | `"stdio"` | Transport protocol (currently only `stdio` supported) |
 | `regenerate_tests` | boolean | `false` | Force regeneration of test cases |
-| `llm_provider` | string | `"openai"` | LLM provider (`openai` or `anthropic`) |
-| `llm_model` | string | `"gpt-4"` | Model to use for test generation and oracle |
+| `llm_provider` | string | `"gemini"` | Default LLM provider (`openai`, `anthropic`, or `gemini`) |
+| `llm_model` | string | *provider default* | Default model (defaults vary by provider) |
+| `llm_temperature` | number | `0.7` | Temperature for LLM responses (0.0 to 1.0) |
+| `llm_max_tokens` | number | `4096` | Maximum tokens for LLM responses |
+| `generator_llm` | object | `null` | LLM config overrides for test generator component |
+| `oracle_llm` | object | `null` | LLM config overrides for oracle component |
+
+### Default Models by Provider
+
+| Provider | Default Model |
+|----------|---------------|
+| `gemini` | `gemini-2.0-flash` |
+| `openai` | `gpt-4` |
+| `anthropic` | `claude-3-5-sonnet-20241022` |
+
+### Component-Specific LLM Configuration
+
+By default, all components use the top-level `llm_provider` and `llm_model` settings. You can override specific components when you need different LLM providers/models (e.g., use a faster model for test generation and a more capable model for the oracle):
+
+```json
+{
+  "project_code": "my-mcp-server",
+  "server_command": "python -m my_server",
+  "generator_llm": {
+    "provider": "gemini",
+    "model": "gemini-2.0-flash",
+    "temperature": 0.8
+  },
+  "oracle_llm": {
+    "provider": "openai",
+    "model": "gpt-4o",
+    "temperature": 0.3
+  }
+}
+```
+
+Component LLM config options:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `provider` | string | Override LLM provider for this component |
+| `model` | string | Override model for this component |
+| `temperature` | number | Override temperature for this component |
+| `max_tokens` | number | Override max tokens for this component |
 
 ### Environment Variables
 
-Set your LLM API keys as environment variables:
+Set your LLM API keys as environment variables or in a `.env` file:
 
 ```bash
+# For Gemini (Google AI)
+export GEMINI_API_KEY="your-api-key"
+
 # For OpenAI
 export OPENAI_API_KEY="your-api-key"
 
 # For Anthropic
 export ANTHROPIC_API_KEY="your-api-key"
 ```
+
+#### Using a `.env` File
+
+Create a `.env` file in your project root:
+
+```env
+GEMINI_API_KEY=your-gemini-api-key
+OPENAI_API_KEY=your-openai-api-key
+ANTHROPIC_API_KEY=your-anthropic-api-key
+```
+
+The framework will automatically load environment variables from the `.env` file.
 
 ## Quick Start
 

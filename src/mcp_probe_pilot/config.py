@@ -9,27 +9,48 @@ import os
 from pathlib import Path
 from typing import Literal, Optional
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator
+
+# Load environment variables from .env file if present
+load_dotenv()
+
+# Supported LLM providers
+LLMProvider = Literal["openai", "anthropic", "gemini"]
+
+# Environment variable names for each provider
+PROVIDER_API_KEY_ENV_VARS: dict[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+# Default models for each provider
+DEFAULT_MODELS: dict[str, str] = {
+    "openai": "gpt-4",
+    "anthropic": "claude-3-5-sonnet-20241022",
+    "gemini": "gemini-2.0-flash",
+}
 
 
 class LLMConfig(BaseModel):
     """Configuration for LLM provider settings.
 
     Attributes:
-        provider: The LLM provider to use (openai or anthropic).
+        provider: The LLM provider to use (openai, anthropic, or gemini).
         model: The model identifier to use for generation and oracle.
         api_key: Optional API key (can be set via environment variable).
         temperature: Temperature for LLM responses (0.0 to 1.0).
         max_tokens: Maximum tokens for LLM responses.
     """
 
-    provider: Literal["openai", "anthropic"] = Field(
+    provider: LLMProvider = Field(
         default="openai",
         description="LLM provider to use for test generation and oracle",
     )
-    model: str = Field(
-        default="gpt-4",
-        description="Model identifier for the selected provider",
+    model: Optional[str] = Field(
+        default=None,
+        description="Model identifier for the selected provider (uses provider default if not set)",
     )
     api_key: Optional[str] = Field(
         default=None,
@@ -47,6 +68,16 @@ class LLMConfig(BaseModel):
         description="Maximum tokens for LLM responses",
     )
 
+    def get_model(self) -> str:
+        """Get the model name, using provider default if not specified.
+
+        Returns:
+            The model identifier string.
+        """
+        if self.model:
+            return self.model
+        return DEFAULT_MODELS.get(self.provider, "gpt-4")
+
     def get_api_key(self) -> str:
         """Get the API key from config or environment variable.
 
@@ -59,7 +90,7 @@ class LLMConfig(BaseModel):
         if self.api_key:
             return self.api_key
 
-        env_var = "OPENAI_API_KEY" if self.provider == "openai" else "ANTHROPIC_API_KEY"
+        env_var = PROVIDER_API_KEY_ENV_VARS.get(self.provider, "OPENAI_API_KEY")
         api_key = os.environ.get(env_var)
 
         if not api_key:
@@ -69,6 +100,55 @@ class LLMConfig(BaseModel):
             )
 
         return api_key
+
+
+class ComponentLLMConfig(BaseModel):
+    """Per-component LLM configuration overrides.
+
+    Allows different LLM settings for different components (generator, oracle, etc.).
+
+    Attributes:
+        provider: Override the LLM provider for this component.
+        model: Override the model for this component.
+        temperature: Override the temperature for this component.
+        max_tokens: Override the max tokens for this component.
+    """
+
+    provider: Optional[LLMProvider] = Field(
+        default=None,
+        description="Override LLM provider for this component",
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Override model for this component",
+    )
+    temperature: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Override temperature for this component",
+    )
+    max_tokens: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="Override max tokens for this component",
+    )
+
+    def apply_to(self, base_config: LLMConfig) -> LLMConfig:
+        """Apply this component's overrides to a base LLM config.
+
+        Args:
+            base_config: The base LLM configuration to override.
+
+        Returns:
+            A new LLMConfig with overrides applied.
+        """
+        return LLMConfig(
+            provider=self.provider if self.provider is not None else base_config.provider,
+            model=self.model if self.model is not None else base_config.model,
+            temperature=self.temperature if self.temperature is not None else base_config.temperature,
+            max_tokens=self.max_tokens if self.max_tokens is not None else base_config.max_tokens,
+        )
 
 
 class MCPProbeConfig(BaseModel):
@@ -81,10 +161,13 @@ class MCPProbeConfig(BaseModel):
         server_command: Command to start the MCP server.
         transport: Transport protocol (currently only stdio supported).
         regenerate_tests: Whether to force regeneration of test cases.
-        llm_provider: LLM provider for test generation and oracle.
-        llm_model: Model to use for LLM operations.
-        llm_temperature: Temperature for LLM responses.
-        llm_max_tokens: Maximum tokens for LLM responses.
+        service_url: URL of the mcp-probe-service API.
+        llm_provider: Default LLM provider for all components.
+        llm_model: Default model to use for LLM operations.
+        llm_temperature: Default temperature for LLM responses.
+        llm_max_tokens: Default maximum tokens for LLM responses.
+        generator_llm: Optional LLM config overrides for test generator.
+        oracle_llm: Optional LLM config overrides for oracle.
         output_dir: Directory for generated tests and reports.
         timeout: Timeout in seconds for server operations.
         max_retries: Maximum retry attempts for test implementation errors.
@@ -108,24 +191,36 @@ class MCPProbeConfig(BaseModel):
         default=False,
         description="Force regeneration of test cases",
     )
-    llm_provider: Literal["openai", "anthropic"] = Field(
-        default="openai",
-        description="LLM provider for test generation and oracle",
+    service_url: str = Field(
+        default="http://localhost:8000",
+        description="URL of the mcp-probe-service API",
     )
-    llm_model: str = Field(
-        default="gpt-4",
-        description="Model to use for LLM operations",
+    llm_provider: LLMProvider = Field(
+        default="gemini",
+        description="Default LLM provider for all components",
+    )
+    llm_model: Optional[str] = Field(
+        default=None,
+        description="Default model to use for LLM operations (uses provider default if not set)",
     )
     llm_temperature: float = Field(
         default=0.7,
         ge=0.0,
         le=1.0,
-        description="Temperature for LLM responses",
+        description="Default temperature for LLM responses",
     )
     llm_max_tokens: int = Field(
         default=4096,
         gt=0,
-        description="Maximum tokens for LLM responses",
+        description="Default maximum tokens for LLM responses",
+    )
+    generator_llm: Optional[ComponentLLMConfig] = Field(
+        default=None,
+        description="LLM configuration overrides for test generator component",
+    )
+    oracle_llm: Optional[ComponentLLMConfig] = Field(
+        default=None,
+        description="LLM configuration overrides for oracle component",
     )
     output_dir: str = Field(
         default=".mcp-probe",
@@ -141,6 +236,24 @@ class MCPProbeConfig(BaseModel):
         ge=0,
         description="Maximum retry attempts for test implementation errors",
     )
+
+    @field_validator("service_url")
+    @classmethod
+    def validate_service_url(cls, v: str) -> str:
+        """Validate service_url is a valid URL.
+
+        Args:
+            v: The service URL value.
+
+        Returns:
+            The validated service URL.
+
+        Raises:
+            ValueError: If service URL is not valid.
+        """
+        if not v.startswith(("http://", "https://")):
+            raise ValueError("service_url must start with http:// or https://")
+        return v.rstrip("/")
 
     @field_validator("project_code")
     @classmethod
@@ -166,10 +279,10 @@ class MCPProbeConfig(BaseModel):
         return v
 
     def get_llm_config(self) -> LLMConfig:
-        """Create an LLMConfig instance from this configuration.
+        """Create a base LLMConfig instance from this configuration.
 
         Returns:
-            LLMConfig with settings from this configuration.
+            LLMConfig with default settings from this configuration.
         """
         return LLMConfig(
             provider=self.llm_provider,
@@ -177,6 +290,28 @@ class MCPProbeConfig(BaseModel):
             temperature=self.llm_temperature,
             max_tokens=self.llm_max_tokens,
         )
+
+    def get_generator_llm_config(self) -> LLMConfig:
+        """Get LLM config for the test generator component.
+
+        Returns:
+            LLMConfig with generator-specific overrides applied.
+        """
+        base_config = self.get_llm_config()
+        if self.generator_llm:
+            return self.generator_llm.apply_to(base_config)
+        return base_config
+
+    def get_oracle_llm_config(self) -> LLMConfig:
+        """Get LLM config for the oracle component.
+
+        Returns:
+            LLMConfig with oracle-specific overrides applied.
+        """
+        base_config = self.get_llm_config()
+        if self.oracle_llm:
+            return self.oracle_llm.apply_to(base_config)
+        return base_config
 
     def get_output_path(self) -> Path:
         """Get the output directory path.

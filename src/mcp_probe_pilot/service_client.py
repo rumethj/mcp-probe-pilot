@@ -1,0 +1,513 @@
+"""HTTP client for communicating with mcp-probe-service.
+
+This module provides the MCPProbeServiceClient class which handles all
+communication with the mcp-probe-service REST API for storing and
+retrieving test scenarios, ground truths, and reports.
+"""
+
+import logging
+from typing import Any, Optional
+
+import httpx
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
+
+class ServiceClientError(Exception):
+    """Base exception for service client errors."""
+
+    pass
+
+
+class ServiceConnectionError(ServiceClientError):
+    """Raised when unable to connect to the service."""
+
+    pass
+
+
+class ServiceAPIError(ServiceClientError):
+    """Raised when the service returns an error response."""
+
+    def __init__(self, message: str, status_code: int, detail: Optional[str] = None):
+        """Initialize the error.
+
+        Args:
+            message: Error message.
+            status_code: HTTP status code.
+            detail: Optional detailed error message from the API.
+        """
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail = detail
+
+
+class GroundTruthResponse(BaseModel):
+    """Response model for ground truth retrieval."""
+
+    id: str
+    target_type: str
+    target_name: str
+    expected_behavior: str
+    expected_output_schema: dict[str, Any]
+    valid_input_examples: list[dict[str, Any]]
+    invalid_input_examples: list[dict[str, Any]]
+    semantic_reference: str
+
+
+class WorkflowGroundTruthResponse(BaseModel):
+    """Response model for workflow ground truth retrieval."""
+
+    id: str
+    workflow_name: str
+    expected_flow: str
+    step_expectations: list[dict[str, Any]]
+    final_outcome: str
+    error_scenarios: list[dict[str, Any]]
+
+
+class TestCaseResponse(BaseModel):
+    """Response model for test case metadata."""
+
+    id: int
+    project_id: int
+    version: int
+    scenario_count: int
+    ground_truth_count: int
+    created_at: str
+
+
+class MCPProbeServiceClient:
+    """HTTP client for mcp-probe-service API.
+
+    This client handles all communication with the mcp-probe-service REST API,
+    including storing and retrieving test scenarios, ground truths, and reports.
+
+    Example:
+        ```python
+        async with MCPProbeServiceClient("http://localhost:8000") as client:
+            # Check service health
+            await client.health_check()
+
+            # Store scenario set
+            response = await client.store_scenario_set(
+                project_code="my-project",
+                scenario_set=scenario_set.model_dump()
+            )
+
+            # Get ground truth
+            gt = await client.get_ground_truth(
+                project_code="my-project",
+                ground_truth_id="gt_tool_auth_login"
+            )
+        ```
+
+    Attributes:
+        base_url: The base URL of the mcp-probe-service.
+        timeout: Request timeout in seconds.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: float = 30.0,
+    ):
+        """Initialize the service client.
+
+        Args:
+            base_url: Base URL of the mcp-probe-service (e.g., "http://localhost:8000").
+            timeout: Request timeout in seconds.
+        """
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def __aenter__(self) -> "MCPProbeServiceClient":
+        """Enter async context manager."""
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout,
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit async context manager."""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    @property
+    def client(self) -> httpx.AsyncClient:
+        """Get the HTTP client, raising if not initialized.
+
+        Returns:
+            The httpx async client.
+
+        Raises:
+            ServiceClientError: If client not initialized (not in context manager).
+        """
+        if self._client is None:
+            raise ServiceClientError(
+                "Client not initialized. Use 'async with MCPProbeServiceClient(...) as client:'"
+            )
+        return self._client
+
+    async def _handle_response(self, response: httpx.Response) -> dict[str, Any]:
+        """Handle HTTP response, raising appropriate errors.
+
+        Args:
+            response: The HTTP response.
+
+        Returns:
+            The JSON response body.
+
+        Raises:
+            ServiceAPIError: If the response indicates an error.
+        """
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail", response.text)
+            except Exception:
+                detail = response.text
+
+            raise ServiceAPIError(
+                f"API error: {response.status_code}",
+                status_code=response.status_code,
+                detail=detail,
+            )
+
+        if response.status_code == 204:
+            return {}
+
+        return response.json()
+
+    # =========================================================================
+    # Health Check
+    # =========================================================================
+
+    async def health_check(self) -> dict[str, Any]:
+        """Check if the service is healthy and reachable.
+
+        Returns:
+            Health check response containing status and version.
+
+        Raises:
+            ServiceConnectionError: If unable to connect to the service.
+            ServiceAPIError: If the service returns an error.
+        """
+        try:
+            response = await self.client.get("/health")
+            return await self._handle_response(response)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(
+                f"Unable to connect to mcp-probe-service at {self.base_url}: {e}"
+            ) from e
+
+    # =========================================================================
+    # Project Management
+    # =========================================================================
+
+    async def create_project(
+        self,
+        project_code: str,
+        name: str,
+        description: Optional[str] = None,
+        server_command: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Create a new project.
+
+        Args:
+            project_code: Unique project identifier.
+            name: Human-readable project name.
+            description: Optional project description.
+            server_command: Command to start the MCP server.
+
+        Returns:
+            The created project data.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: If project already exists or other error.
+        """
+        try:
+            response = await self.client.post(
+                "/api/projects",
+                json={
+                    "project_code": project_code,
+                    "name": name,
+                    "description": description,
+                    "server_command": server_command,
+                },
+            )
+            return await self._handle_response(response)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def get_project(self, project_code: str) -> Optional[dict[str, Any]]:
+        """Get a project by its code.
+
+        Args:
+            project_code: The project code to look up.
+
+        Returns:
+            The project data if found, None otherwise.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: For non-404 errors.
+        """
+        try:
+            response = await self.client.get(f"/api/projects/{project_code}")
+            if response.status_code == 404:
+                return None
+            return await self._handle_response(response)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def ensure_project_exists(
+        self,
+        project_code: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        server_command: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Ensure a project exists, creating it if necessary.
+
+        Args:
+            project_code: Unique project identifier.
+            name: Human-readable project name (defaults to project_code).
+            description: Optional project description.
+            server_command: Command to start the MCP server.
+
+        Returns:
+            The project data.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: On unexpected errors.
+        """
+        project = await self.get_project(project_code)
+        if project:
+            logger.debug(f"Project '{project_code}' already exists")
+            return project
+
+        logger.info(f"Creating project '{project_code}'")
+        return await self.create_project(
+            project_code=project_code,
+            name=name or project_code,
+            description=description,
+            server_command=server_command,
+        )
+
+    # =========================================================================
+    # Scenario Set / Test Case Management
+    # =========================================================================
+
+    async def store_scenario_set(
+        self,
+        project_code: str,
+        scenario_set: dict[str, Any],
+    ) -> TestCaseResponse:
+        """Store a generated scenario set for a project.
+
+        Args:
+            project_code: The project code.
+            scenario_set: The ScenarioSet data as a dictionary.
+
+        Returns:
+            Test case metadata including version number.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: If project not found or other error.
+        """
+        try:
+            response = await self.client.post(
+                f"/api/projects/{project_code}/tests",
+                json={"scenario_set": scenario_set},
+            )
+            data = await self._handle_response(response)
+            return TestCaseResponse(**data)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def get_scenario_set(self, project_code: str) -> Optional[dict[str, Any]]:
+        """Get the latest scenario set for a project.
+
+        Args:
+            project_code: The project code.
+
+        Returns:
+            The scenario set data if found, None if no tests exist.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: For non-404 errors.
+        """
+        try:
+            response = await self.client.get(f"/api/projects/{project_code}/tests")
+            if response.status_code == 404:
+                return None
+            data = await self._handle_response(response)
+            return data.get("scenario_set")
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def delete_scenario_sets(self, project_code: str) -> None:
+        """Delete all scenario sets for a project.
+
+        Args:
+            project_code: The project code.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: If project not found or other error.
+        """
+        try:
+            response = await self.client.delete(f"/api/projects/{project_code}/tests")
+            await self._handle_response(response)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    # =========================================================================
+    # Ground Truth Retrieval
+    # =========================================================================
+
+    async def get_ground_truth(
+        self,
+        project_code: str,
+        ground_truth_id: str,
+    ) -> Optional[GroundTruthResponse]:
+        """Get a specific ground truth by ID.
+
+        Args:
+            project_code: The project code.
+            ground_truth_id: The ground truth ID (e.g., "gt_tool_auth_login").
+
+        Returns:
+            The ground truth data if found, None otherwise.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: For non-404 errors.
+        """
+        try:
+            response = await self.client.get(
+                f"/api/projects/{project_code}/ground-truths/{ground_truth_id}"
+            )
+            if response.status_code == 404:
+                return None
+            data = await self._handle_response(response)
+            return GroundTruthResponse(**data)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def get_workflow_ground_truth(
+        self,
+        project_code: str,
+        ground_truth_id: str,
+    ) -> Optional[WorkflowGroundTruthResponse]:
+        """Get a specific workflow ground truth by ID.
+
+        Args:
+            project_code: The project code.
+            ground_truth_id: The workflow ground truth ID.
+
+        Returns:
+            The workflow ground truth data if found, None otherwise.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: For non-404 errors.
+        """
+        try:
+            response = await self.client.get(
+                f"/api/projects/{project_code}/ground-truths/{ground_truth_id}"
+            )
+            if response.status_code == 404:
+                return None
+            data = await self._handle_response(response)
+            return WorkflowGroundTruthResponse(**data)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def list_ground_truths(
+        self,
+        project_code: str,
+    ) -> dict[str, Any]:
+        """List all ground truths for a project.
+
+        Args:
+            project_code: The project code.
+
+        Returns:
+            Dictionary containing 'ground_truths' and 'workflow_ground_truths'.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: If project or tests not found.
+        """
+        try:
+            response = await self.client.get(
+                f"/api/projects/{project_code}/ground-truths"
+            )
+            return await self._handle_response(response)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    # =========================================================================
+    # Report Management
+    # =========================================================================
+
+    async def store_report(
+        self,
+        project_code: str,
+        report_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Store a test report for a project.
+
+        Args:
+            project_code: The project code.
+            report_data: The report data containing summary, test results, etc.
+
+        Returns:
+            The created report metadata.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: If project not found or other error.
+        """
+        try:
+            response = await self.client.post(
+                f"/api/projects/{project_code}/reports",
+                json={"report_data": report_data},
+            )
+            return await self._handle_response(response)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def get_latest_report(self, project_code: str) -> Optional[dict[str, Any]]:
+        """Get the latest report for a project.
+
+        Args:
+            project_code: The project code.
+
+        Returns:
+            The report data if found, None if no reports exist.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: For non-404 errors.
+        """
+        try:
+            response = await self.client.get(
+                f"/api/projects/{project_code}/reports",
+                params={"limit": 1},
+            )
+            if response.status_code == 404:
+                return None
+            data = await self._handle_response(response)
+            reports = data.get("reports", [])
+            return reports[0] if reports else None
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e

@@ -1,11 +1,13 @@
 # Test Generators Module
 
-The generators module provides LLM-powered test generation capabilities for MCP servers. It generates Gherkin BDD test scenarios from server discovery results using a multi-phase approach that prevents ground truth poisoning.
+The generators module provides LLM-powered test generation capabilities for MCP servers. It generates Gherkin BDD test scenarios from server discovery results using a multi-phase approach that prevents ground truth poisoning, and converts them into executable Behave tests.
 
 **Key Features:**
 - Two-phase generation for single-feature tests (ground truth → scenarios)
 - **Workflow generation** for multi-step chained scenarios (tools + resources + prompts + sampling + elicitation)
-- Support for OpenAI and Anthropic LLM providers
+- **Test implementation** - converts Gherkin scenarios into executable Behave tests
+- **Service integration** - stores tests and ground truths in mcp-probe-service
+- Support for OpenAI, Anthropic, and Gemini LLM providers
 - Mock client for testing without API calls
 
 ## Architecture
@@ -308,3 +310,99 @@ class CustomLLMClient(BaseLLMClient):
 ### Custom Prompt Templates
 
 Modify prompts in `prompts.py` to customize generation behavior while maintaining the two-phase separation.
+
+---
+
+## Test Implementor
+
+The `TestImplementor` class converts generated Gherkin scenarios into executable Behave BDD tests. It uses LLM to generate Python step definitions that implement the test logic.
+
+### Components
+
+| Component | Description |
+|-----------|-------------|
+| `TestImplementor` | Main class that generates executable Behave tests |
+| `TestImplementation` | Result model containing paths to generated files |
+| `TestImplementorError` | Exception for implementation failures |
+
+### Generated Files
+
+The TestImplementor generates the following structure:
+
+```
+output_dir/
+├── features/
+│   ├── tool_auth_login.feature       # Feature files from scenarios
+│   ├── tool_create_project.feature
+│   ├── workflow_authentication.feature
+│   ├── environment.py                 # Behave hooks and setup
+│   ├── ground_truth_client.py         # Runtime client for ground truths
+│   └── steps/
+│       ├── __init__.py
+│       └── mcp_steps.py               # LLM-generated step definitions
+└── scenario_set.json                  # Backup of generated scenarios
+```
+
+### Usage
+
+```python
+from mcp_probe_pilot.config import LLMConfig
+from mcp_probe_pilot.generators import TestImplementor
+
+config = LLMConfig(provider="openai", model="gpt-4")
+implementor = TestImplementor(config)
+
+# Generate executable Behave tests
+result = await implementor.implement_tests(
+    scenario_set=scenario_set,
+    output_dir=Path(".mcp-probe"),
+    project_code="my-project",
+    service_url="http://localhost:8000",
+    server_command="python -m my_server",
+)
+
+print(f"Generated {result.feature_count} feature files")
+print(f"Step definitions: {result.step_definitions_file}")
+print(f"Environment: {result.environment_file}")
+```
+
+### Service Integration
+
+The generated tests access ground truths from mcp-probe-service at runtime:
+
+1. **environment.py** - Sets up the test environment with:
+   - MCP client for server communication
+   - Ground truth client for fetching from mcp-probe-service
+   - Shared context for storing values between steps
+
+2. **ground_truth_client.py** - Fetches ground truths via HTTP:
+   - Caches ground truths for efficiency
+   - Provides async `get(ground_truth_id)` method
+
+3. **Step definitions** - Use the context to:
+   - Connect to the MCP server
+   - Call tools, read resources, get prompts
+   - Fetch and validate against ground truths
+
+### Running Generated Tests
+
+```bash
+# Ensure mcp-probe-service is running
+cd mcp-probe-service && docker-compose up -d
+
+# Run Behave tests
+cd .mcp-probe && behave
+
+# Run specific feature
+behave features/tool_auth_login.feature
+```
+
+### Environment Variables
+
+The generated tests support these environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MCP_PROBE_SERVICE_URL` | `http://localhost:8000` | URL of mcp-probe-service |
+| `MCP_PROBE_PROJECT_CODE` | From config | Project code for ground truth lookups |
+| `MCP_SERVER_COMMAND` | From config | Command to start MCP server |
