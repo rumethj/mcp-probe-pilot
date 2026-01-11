@@ -332,9 +332,10 @@ The TestImplementor generates the following structure:
 ```
 output_dir/
 ├── features/
-│   ├── tool_auth_login.feature       # Feature files from scenarios
-│   ├── tool_create_project.feature
-│   ├── workflow_authentication.feature
+│   ├── tool_*.feature                 # Feature files for tools
+│   ├── resource_*.feature             # Feature files for resources
+│   ├── prompt_*.feature               # Feature files for prompts
+│   ├── workflow_*.feature             # Workflow feature files
 │   ├── environment.py                 # Behave hooks and setup
 │   ├── ground_truth_client.py         # Runtime client for ground truths
 │   └── steps/
