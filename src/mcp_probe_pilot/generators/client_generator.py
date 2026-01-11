@@ -104,6 +104,8 @@ class ClientTestGenerator:
         include_resources: bool = True,
         include_prompts: bool = True,
         include_workflows: bool = True,
+        max_test_cases: Optional[int] = None,
+        max_ground_truths: Optional[int] = None,
     ) -> ScenarioSet:
         """Generate test scenarios from discovery results.
 
@@ -133,6 +135,10 @@ class ClientTestGenerator:
 
         if include_tools:
             for tool in discovery.tools:
+                if max_ground_truths and len(scenario_set.ground_truths) >= max_ground_truths:
+                    logger.info(f"Reached max ground truths limit ({max_ground_truths})")
+                    break
+
                 try:
                     ground_truth = await self._generate_tool_ground_truth(tool)
                     scenario_set.add_ground_truth(ground_truth)
@@ -142,6 +148,10 @@ class ClientTestGenerator:
 
         if include_resources:
             for resource in discovery.resources:
+                if max_ground_truths and len(scenario_set.ground_truths) >= max_ground_truths:
+                    logger.info(f"Reached max ground truths limit ({max_ground_truths})")
+                    break
+
                 try:
                     ground_truth = await self._generate_resource_ground_truth(resource)
                     scenario_set.add_ground_truth(ground_truth)
@@ -153,6 +163,10 @@ class ClientTestGenerator:
 
         if include_prompts:
             for prompt in discovery.prompts:
+                if max_ground_truths and len(scenario_set.ground_truths) >= max_ground_truths:
+                    logger.info(f"Reached max ground truths limit ({max_ground_truths})")
+                    break
+
                 try:
                     ground_truth = await self._generate_prompt_ground_truth(prompt)
                     scenario_set.add_ground_truth(ground_truth)
@@ -165,6 +179,10 @@ class ClientTestGenerator:
 
         if include_tools:
             for tool in discovery.tools:
+                if max_test_cases and scenario_set.total_scenarios >= max_test_cases:
+                    logger.info(f"Reached max test cases limit ({max_test_cases})")
+                    break
+
                 ground_truth_id = GroundTruthSpec.generate_id(TargetType.TOOL, tool.name)
                 if ground_truth_id in scenario_set.ground_truths:
                     try:
@@ -176,6 +194,10 @@ class ClientTestGenerator:
 
         if include_resources:
             for resource in discovery.resources:
+                if max_test_cases and scenario_set.total_scenarios >= max_test_cases:
+                    logger.info(f"Reached max test cases limit ({max_test_cases})")
+                    break
+
                 ground_truth_id = GroundTruthSpec.generate_id(
                     TargetType.RESOURCE, self._resource_name(resource)
                 )
@@ -191,6 +213,10 @@ class ClientTestGenerator:
 
         if include_prompts:
             for prompt in discovery.prompts:
+                if max_test_cases and scenario_set.total_scenarios >= max_test_cases:
+                    logger.info(f"Reached max test cases limit ({max_test_cases})")
+                    break
+
                 ground_truth_id = GroundTruthSpec.generate_id(TargetType.PROMPT, prompt.name)
                 if ground_truth_id in scenario_set.ground_truths:
                     try:

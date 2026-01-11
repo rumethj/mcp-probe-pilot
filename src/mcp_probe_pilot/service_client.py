@@ -7,6 +7,8 @@ retrieving test scenarios, ground truths, and reports.
 
 import logging
 from typing import Any, Optional
+from pathlib import Path
+import hashlib
 
 import httpx
 from pydantic import BaseModel
@@ -330,6 +332,51 @@ class MCPProbeServiceClient:
             return TestCaseResponse(**data)
         except httpx.ConnectError as e:
             raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def store_test_artifacts(
+        self,
+        project_code: str,
+        version: int,
+        artifacts_path: Path,
+    ) -> dict[str, Any]:
+        """Upload test artifacts (feature files, etc.) to the service.
+
+        Args:
+            project_code: The project code.
+            version: The test case version.
+            artifacts_path: Path to the zip file containing artifacts.
+
+        Returns:
+            Server response.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: If upload fails.
+        """
+        if not artifacts_path.exists():
+             raise FileNotFoundError(f"Artifacts file not found: {artifacts_path}")
+
+        # 1. Read into memory
+        with open(artifacts_path, "rb") as f:
+            file_content = f.read()
+
+        # 2. DEBUG: Calculate MD5 and Size
+        md5_hash = hashlib.md5(file_content).hexdigest()
+        size_bytes = len(file_content)
+        logger.debug(f"DEBUG CLIENT: Sending Artifacts. Size: {size_bytes} bytes, MD5: {md5_hash}")
+
+        # 3. Send
+        files = {"file": ("artifacts.zip", file_content, "application/zip")}
+        try:
+            response = await self.client.post(
+                f"/api/projects/{project_code}/tests/{version}/artifacts",
+                files=files,
+                timeout=60.0 # Increase timeout just in case
+            )
+            return await self._handle_response(response)
+        except Exception as e:
+            logger.debug(f"DEBUG CLIENT: Upload failed: {e}")
+            raise
 
     async def get_scenario_set(self, project_code: str) -> Optional[dict[str, Any]]:
         """Get the latest scenario set for a project.

@@ -14,9 +14,13 @@ Usage:
 import asyncio
 import json
 import logging
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
+import os
+import zipfile
+import tempfile
 
 import typer
 from rich.console import Console
@@ -83,25 +87,36 @@ def setup_logging(verbose: bool = False) -> None:
     )
 
 
-def get_config_path(config: Optional[Path]) -> Path:
+def get_config_path(config: Optional[Path], mcp_source_code: Optional[Path] = None) -> Path:
     """Get the configuration file path.
 
     Args:
         config: Optional path provided by user.
+        mcp_source_code: Optional path to source code directory.
 
     Returns:
         Path to the configuration file.
     """
     if config is not None:
         return config
+    
+    if mcp_source_code is not None:
+        return mcp_source_code / DEFAULT_CONFIG_FILENAME
+
+    # Priority 2: Environment variable
+    env_source_path = os.environ.get("MCP_SOURCE_CODE_PATH")
+    if env_source_path:
+        return Path(env_source_path) / DEFAULT_CONFIG_FILENAME
+
     return Path.cwd() / DEFAULT_CONFIG_FILENAME
 
 
-def load_config_with_error_handling(config_path: Path) -> MCPProbeConfig:
+def load_config_with_error_handling(config_path: Path, mcp_source_code: Optional[Path] = None) -> MCPProbeConfig:
     """Load configuration with user-friendly error handling.
 
     Args:
         config_path: Path to the configuration file.
+        mcp_source_code: Optional path to override the source code directory.
 
     Returns:
         Loaded configuration.
@@ -110,12 +125,29 @@ def load_config_with_error_handling(config_path: Path) -> MCPProbeConfig:
         typer.Exit: On configuration loading failure.
     """
     try:
-        return load_config(config_path)
+        probe_config = load_config(config_path)
+        
+        # If flag was provided, it should override anything from env or file
+        if mcp_source_code:
+            probe_config.mcp_source_code_path = str(mcp_source_code.absolute())
+            # Re-apply auto-injection if path changed manually
+            if probe_config.server_command.startswith("uv") and "--directory" not in probe_config.server_command:
+                parts = probe_config.server_command.split(None, 1)
+                if len(parts) > 1:
+                    probe_config.server_command = f"uv --directory {probe_config.mcp_source_code_path} {parts[1]}"
+                else:
+                    probe_config.server_command = f"uv --directory {probe_config.mcp_source_code_path}"
+        
+        return probe_config
     except FileNotFoundError:
         console.print(
             f"[red]Error:[/red] Configuration file not found: {config_path}",
             style="bold",
         )
+        if mcp_source_code:
+             console.print(
+                f"\n[yellow]Hint:[/yellow] Make sure [cyan]{DEFAULT_CONFIG_FILENAME}[/cyan] exists in your source directory."
+            )
         console.print(
             "\nRun [cyan]mcp-probe init[/cyan] to create a configuration file."
         )
@@ -319,6 +351,11 @@ def generate(
         "-v",
         help="Enable verbose output",
     ),
+    mcp_source_code: Optional[Path] = typer.Option(
+        None,
+        "--mcp-source-code",
+        help="Absolute path to the server source code directory",
+    ),
 ) -> None:
     """Generate test cases from MCP server discovery.
 
@@ -329,8 +366,8 @@ def generate(
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
 
-    config_path = get_config_path(config)
-    probe_config = load_config_with_error_handling(config_path)
+    config_path = get_config_path(config, mcp_source_code)
+    probe_config = load_config_with_error_handling(config_path, mcp_source_code)
 
     console.print(
         Panel(
@@ -371,7 +408,7 @@ async def _run_generation(probe_config: MCPProbeConfig, logger: logging.Logger) 
                 progress.update(task, description="Service connected!")
 
                 # Ensure project exists
-                progress.update(task, description="Ensuring project exists...")
+                # progress.update(task, description="Ensuring project exists...") # silenced
                 await service_client.ensure_project_exists(
                     project_code=probe_config.project_code,
                     name=probe_config.project_code,
@@ -456,8 +493,35 @@ async def _run_generation_with_service(
         task = progress.add_task("Generating ground truth...", total=None)
 
         try:
-            progress.update(task, description="Generating test scenarios...")
-            scenario_set = await generator.generate_scenarios(discovery_result)
+            # Check if tests exist and if we should skip generation
+            existing_tests = None
+            if not probe_config.regenerate_tests:
+                progress.update(task, description="Checking for existing tests...")
+                existing_tests = await service_client.get_scenario_set(probe_config.project_code)
+            
+            if existing_tests:
+                console.print("\n[yellow]Tests already exist for this project. Skipping generation.[/yellow]")
+                console.print("[dim]Use 'regenerate_tests': true in config to force regeneration.[/dim]")
+                
+                # We need a ScenarioSet object for the next steps, so reconstruct it from stored data
+                # Note: This might be incomplete depending on what's stored vs what ScenarioSet expects,
+                # but getting the scenario set from service usually returns the JSON dump.
+                # For now, we'll try to validate it into the model.
+                try:
+                    scenario_set = ScenarioSet(**existing_tests)
+                    console.print(f"[green]✓[/green] Loaded existing tests (version {existing_tests.get('version', 'unknown')})")
+                except Exception as e:
+                    console.print(f"[red]Warning:[/red] Failed to parse existing tests: {e}")
+                    console.print("Proceeding with regeneration...")
+                    existing_tests = None
+
+            if not existing_tests:
+                progress.update(task, description="Generating test scenarios...")
+                scenario_set = await generator.generate_scenarios(
+                    discovery_result,
+                    max_test_cases=probe_config.max_test_cases,
+                    max_ground_truths=probe_config.max_ground_truths,
+                )
 
         except GeneratorError as e:
             console.print(f"\n[red]Error:[/red] Test generation failed: {e}")
@@ -476,12 +540,19 @@ async def _run_generation_with_service(
         task = progress.add_task("Storing scenarios in service...", total=None)
 
         try:
-            version = await store_scenario_set_in_service(
-                service_client,
-                probe_config.project_code,
-                scenario_set,
-            )
-            progress.update(task, description=f"Stored as version {version}")
+            # Only store if we generated new tests (not existing ones)
+            if not existing_tests:
+                version = await store_scenario_set_in_service(
+                    service_client,
+                    probe_config.project_code,
+                    scenario_set,
+                )
+                progress.update(task, description=f"Stored as version {version}")
+            else:
+                 # If we loaded existing tests, we don't need to store, 
+                 # but we might want the version for display
+                 version = existing_tests.get('version', 'existing')
+                 progress.update(task, description=f"Using existing version {version}")
 
         except ServiceAPIError as e:
             console.print(f"\n[red]Error:[/red] Failed to store tests: {e.detail}")
@@ -519,6 +590,89 @@ async def _run_generation_with_service(
 
     # Also save local backup
     save_scenario_set_local(scenario_set, output_dir)
+    
+    # NEW: Zip and store artifacts in service
+    if not existing_tests: # version is defined
+        # with Progress(
+        #     SpinnerColumn(),
+        #     TextColumn("[progress.description]{task.description}"),
+        #     console=console,
+        # ) as progress:
+        #     task = progress.add_task("Uploading artifacts to service...", total=None)
+            
+        #     try:
+        #         # Create zip archive
+        #         zip_base_name = output_dir / "artifacts"
+        #         zip_path_str = shutil.make_archive(str(zip_base_name), 'zip', output_dir)
+        #         zip_path = Path(zip_path_str)
+                
+        #         # Upload
+        #         await service_client.store_test_artifacts(
+        #             project_code=probe_config.project_code,
+        #             version=version,
+        #             artifacts_path=zip_path
+        #         )
+                
+        #         # Cleanup zip
+        #         if zip_path.exists():
+        #             zip_path.unlink()
+                    
+        #         progress.update(task, description="Artifacts uploaded successfully")
+        #         console.print(f"[green]✓[/green] Artifacts stored in service")
+                
+        #     except Exception as e:
+        #         console.print(f"\n[red]Warning:[/red] Failed to upload artifacts: {e}")
+        #         # Don't fail the whole process just for upload failure
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Uploading artifacts to service...", total=None)
+            
+            # Create a temporary directory to hold the zip file
+            # This prevents the "zipping the zip file" corruption issue
+            with tempfile.TemporaryDirectory() as temp_dir:
+                try:
+                    progress.update(task, description="Creating zip archive...")
+                    
+                    # Create zip OUTSIDE the output_dir
+                    zip_base_name = Path(temp_dir) / "artifacts"
+                    
+                    # Run strictly synchronous to ensure flush
+                    zip_path_str = shutil.make_archive(
+                        str(zip_base_name), 
+                        'zip', 
+                        root_dir=output_dir
+                    )
+                    zip_path = Path(zip_path_str)
+                    
+                    # --- SANITY CHECK ---
+                    # Verify the zip is valid locally before sending
+                    if not zipfile.is_zipfile(zip_path):
+                        raise ValueError("Generated zip is invalid (header check)")
+                        
+                    with zipfile.ZipFile(zip_path, 'r') as z:
+                        bad_file = z.testzip()
+                        if bad_file:
+                             raise ValueError(f"Generated zip has corrupt file: {bad_file}")
+                    # --------------------
+
+                    progress.update(task, description="Uploading to service...")
+                    
+                    # Upload (Client reads into memory -> sends)
+                    await service_client.store_test_artifacts(
+                        project_code=probe_config.project_code,
+                        version=version,
+                        artifacts_path=zip_path
+                    )
+                    
+                    progress.update(task, description="Artifacts uploaded successfully")
+                    console.print(f"[green]✓[/green] Artifacts stored in service")
+                    
+                except Exception as e:
+                    console.print(f"\n[red]Warning:[/red] Failed to upload artifacts: {e}")
+                    # Don't fail the whole process just for upload failure
 
     console.print(f"\n[green]✓[/green] Tests generated to [cyan]{output_dir}[/cyan]")
     console.print(
@@ -553,6 +707,11 @@ def run(
         "-v",
         help="Enable verbose output",
     ),
+    mcp_source_code: Optional[Path] = typer.Option(
+        None,
+        "--mcp-source-code",
+        help="Absolute path to the server source code directory",
+    ),
 ) -> None:
     """Execute generated tests against the MCP server.
 
@@ -564,8 +723,8 @@ def run(
     """
     setup_logging(verbose)
 
-    config_path = get_config_path(config)
-    probe_config = load_config_with_error_handling(config_path)
+    config_path = get_config_path(config, mcp_source_code)
+    probe_config = load_config_with_error_handling(config_path, mcp_source_code)
 
     console.print(
         Panel(
@@ -622,6 +781,11 @@ def report(
         "-v",
         help="Enable verbose output",
     ),
+    mcp_source_code: Optional[Path] = typer.Option(
+        None,
+        "--mcp-source-code",
+        help="Absolute path to the server source code directory",
+    ),
 ) -> None:
     """Generate HTML test report from execution results.
 
@@ -633,8 +797,8 @@ def report(
     """
     setup_logging(verbose)
 
-    config_path = get_config_path(config)
-    probe_config = load_config_with_error_handling(config_path)
+    config_path = get_config_path(config, mcp_source_code)
+    probe_config = load_config_with_error_handling(config_path, mcp_source_code)
 
     console.print(
         Panel(
@@ -679,6 +843,11 @@ def full(
         "-v",
         help="Enable verbose output",
     ),
+    mcp_source_code: Optional[Path] = typer.Option(
+        None,
+        "--mcp-source-code",
+        help="Absolute path to the server source code directory",
+    ),
 ) -> None:
     """Run the complete test pipeline: generate -> run -> report.
 
@@ -692,8 +861,8 @@ def full(
     """
     setup_logging(verbose)
 
-    config_path = get_config_path(config)
-    probe_config = load_config_with_error_handling(config_path)
+    config_path = get_config_path(config, mcp_source_code)
+    probe_config = load_config_with_error_handling(config_path, mcp_source_code)
 
     console.print(
         Panel(

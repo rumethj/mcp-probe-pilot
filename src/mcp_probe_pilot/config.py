@@ -192,7 +192,7 @@ class MCPProbeConfig(BaseModel):
         description="Force regeneration of test cases",
     )
     service_url: str = Field(
-        default="http://localhost:8000",
+        default="http://localhost:8080",
         description="URL of the mcp-probe-service API",
     )
     llm_provider: LLMProvider = Field(
@@ -235,6 +235,20 @@ class MCPProbeConfig(BaseModel):
         default=2,
         ge=0,
         description="Maximum retry attempts for test implementation errors",
+    )
+    max_test_cases: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="Maximum number of test cases to generate",
+    )
+    max_ground_truths: Optional[int] = Field(
+        default=None,
+        gt=0,
+        description="Maximum number of ground truths to generate",
+    )
+    mcp_source_code_path: Optional[str] = Field(
+        default=None,
+        description="Path to the MCP server source code",
     )
 
     @field_validator("service_url")
@@ -352,6 +366,35 @@ def load_config(config_path: Optional[str | Path] = None) -> MCPProbeConfig:
             config_data = json.load(f)
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON in configuration file: {e}") from e
+
+    # Override from environment variables
+    env_overrides = {
+        "service_url": os.environ.get("MCP_PROBE_SERVICE_URL"),
+        "project_code": os.environ.get("MCP_PROBE_PROJECT_CODE"),
+        "server_command": os.environ.get("MCP_SERVER_COMMAND"),
+        "mcp_source_code_path": os.environ.get("MCP_SOURCE_CODE_PATH"),
+    }
+    
+    # Remove None values
+    env_overrides = {k: v for k, v in env_overrides.items() if v is not None}
+    
+    # Update config data with overrides
+    config_data.update(env_overrides)
+
+    # Auto-inject --directory if using uv and source path is present
+    server_cmd = config_data.get("server_command", "")
+    source_path = config_data.get("mcp_source_code_path")
+    
+    if source_path and server_cmd.startswith("uv"):
+        # If it already has --directory, it might be complex to replace. 
+        # For simplicity, if it's "uv run ...", make it "uv --directory <path> run ..."
+        # If it already has --directory, we skip to avoid messing up.
+        if "--directory" not in server_cmd:
+            parts = server_cmd.split(None, 1) # Split at first whitespace
+            if len(parts) > 1:
+                config_data["server_command"] = f"uv --directory {source_path} {parts[1]}"
+            else:
+                config_data["server_command"] = f"uv --directory {source_path}"
 
     return MCPProbeConfig(**config_data)
 

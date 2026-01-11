@@ -1207,7 +1207,7 @@ class GroundTruthClient:
 
     Example:
         ```python
-        client = GroundTruthClient("http://localhost:8000", "my-project")
+        client = GroundTruthClient("http://localhost:8080", "my-project")
         gt = await client.get("gt_tool_auth_login")
         print(gt["expected_behavior"])
         await client.close()

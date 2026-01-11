@@ -404,6 +404,6 @@ The generated tests support these environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MCP_PROBE_SERVICE_URL` | `http://localhost:8000` | URL of mcp-probe-service |
+| `MCP_PROBE_SERVICE_URL` | `http://localhost:8080` | URL of mcp-probe-service |
 | `MCP_PROBE_PROJECT_CODE` | From config | Project code for ground truth lookups |
 | `MCP_SERVER_COMMAND` | From config | Command to start MCP server |
