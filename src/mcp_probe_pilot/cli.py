@@ -37,13 +37,12 @@ from .config import (
     load_config,
     save_config,
 )
-from .discovery import MCPDiscoveryClient, MCPDiscoveryError
+from .discovery import ASTIndexer, ASTIndexerError, MCPDiscoveryClient, MCPDiscoveryError
 from .generators import (
-    ClientTestGenerator,
     GeneratorError,
-    ScenarioSet,
-    TestImplementor,
-    TestImplementorError,
+    IntegrationTestGenerator,
+    UnitTestGenerator,
+    create_llm_client,
 )
 from .service_client import (
     MCPProbeServiceClient,
@@ -64,12 +63,6 @@ console = Console()
 
 # Default config filename
 DEFAULT_CONFIG_FILENAME = "mcp-probe-service-properties.json"
-
-
-class NotImplementedModuleError(Exception):
-    """Raised when attempting to use a module that hasn't been implemented yet."""
-
-    pass
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -99,11 +92,10 @@ def get_config_path(config: Optional[Path], mcp_source_code: Optional[Path] = No
     """
     if config is not None:
         return config
-    
+
     if mcp_source_code is not None:
         return mcp_source_code / DEFAULT_CONFIG_FILENAME
 
-    # Priority 2: Environment variable
     env_source_path = os.environ.get("MCP_SOURCE_CODE_PATH")
     if env_source_path:
         return Path(env_source_path) / DEFAULT_CONFIG_FILENAME
@@ -111,7 +103,9 @@ def get_config_path(config: Optional[Path], mcp_source_code: Optional[Path] = No
     return Path.cwd() / DEFAULT_CONFIG_FILENAME
 
 
-def load_config_with_error_handling(config_path: Path, mcp_source_code: Optional[Path] = None) -> MCPProbeConfig:
+def load_config_with_error_handling(
+    config_path: Path, mcp_source_code: Optional[Path] = None
+) -> MCPProbeConfig:
     """Load configuration with user-friendly error handling.
 
     Args:
@@ -126,18 +120,23 @@ def load_config_with_error_handling(config_path: Path, mcp_source_code: Optional
     """
     try:
         probe_config = load_config(config_path)
-        
-        # If flag was provided, it should override anything from env or file
+
         if mcp_source_code:
             probe_config.mcp_source_code_path = str(mcp_source_code.absolute())
-            # Re-apply auto-injection if path changed manually
-            if probe_config.server_command.startswith("uv") and "--directory" not in probe_config.server_command:
+            if (
+                probe_config.server_command.startswith("uv")
+                and "--directory" not in probe_config.server_command
+            ):
                 parts = probe_config.server_command.split(None, 1)
                 if len(parts) > 1:
-                    probe_config.server_command = f"uv --directory {probe_config.mcp_source_code_path} {parts[1]}"
+                    probe_config.server_command = (
+                        f"uv --directory {probe_config.mcp_source_code_path} {parts[1]}"
+                    )
                 else:
-                    probe_config.server_command = f"uv --directory {probe_config.mcp_source_code_path}"
-        
+                    probe_config.server_command = (
+                        f"uv --directory {probe_config.mcp_source_code_path}"
+                    )
+
         return probe_config
     except FileNotFoundError:
         console.print(
@@ -145,8 +144,9 @@ def load_config_with_error_handling(config_path: Path, mcp_source_code: Optional
             style="bold",
         )
         if mcp_source_code:
-             console.print(
-                f"\n[yellow]Hint:[/yellow] Make sure [cyan]{DEFAULT_CONFIG_FILENAME}[/cyan] exists in your source directory."
+            console.print(
+                f"\n[yellow]Hint:[/yellow] Make sure [cyan]{DEFAULT_CONFIG_FILENAME}[/cyan] "
+                f"exists in your source directory."
             )
         console.print(
             "\nRun [cyan]mcp-probe init[/cyan] to create a configuration file."
@@ -155,43 +155,6 @@ def load_config_with_error_handling(config_path: Path, mcp_source_code: Optional
     except ValueError as e:
         console.print(f"[red]Error:[/red] Invalid configuration: {e}", style="bold")
         raise typer.Exit(code=1)
-
-
-def save_scenario_set_local(scenario_set: ScenarioSet, output_dir: Path) -> None:
-    """Save generated scenarios to the local output directory (for debugging).
-
-    Args:
-        scenario_set: The generated scenarios to save.
-        output_dir: Directory to save files to.
-    """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save complete scenario set as JSON for debugging/backup
-    scenario_set_file = output_dir / "scenario_set.json"
-    with open(scenario_set_file, "w") as f:
-        json.dump(scenario_set.model_dump(), f, indent=2)
-
-
-async def store_scenario_set_in_service(
-    service_client: MCPProbeServiceClient,
-    project_code: str,
-    scenario_set: ScenarioSet,
-) -> int:
-    """Store scenario set in mcp-probe-service.
-
-    Args:
-        service_client: The service client.
-        project_code: Project code.
-        scenario_set: The generated scenarios.
-
-    Returns:
-        The version number of the stored test cases.
-    """
-    response = await service_client.store_scenario_set(
-        project_code=project_code,
-        scenario_set=scenario_set.model_dump(),
-    )
-    return response.version
 
 
 def print_discovery_summary(discovery_result) -> None:
@@ -205,43 +168,20 @@ def print_discovery_summary(discovery_result) -> None:
     table.add_column("Count", style="green", justify="right")
     table.add_column("Names", style="dim")
 
-    # Tools
     tool_names = ", ".join(t.name for t in discovery_result.tools[:5])
     if len(discovery_result.tools) > 5:
         tool_names += f" (+{len(discovery_result.tools) - 5} more)"
     table.add_row("Tools", str(len(discovery_result.tools)), tool_names)
 
-    # Resources
     resource_names = ", ".join(r.name or r.uri for r in discovery_result.resources[:5])
     if len(discovery_result.resources) > 5:
         resource_names += f" (+{len(discovery_result.resources) - 5} more)"
     table.add_row("Resources", str(len(discovery_result.resources)), resource_names)
 
-    # Prompts
     prompt_names = ", ".join(p.name for p in discovery_result.prompts[:5])
     if len(discovery_result.prompts) > 5:
         prompt_names += f" (+{len(discovery_result.prompts) - 5} more)"
     table.add_row("Prompts", str(len(discovery_result.prompts)), prompt_names)
-
-    console.print(table)
-
-
-def print_generation_summary(scenario_set: ScenarioSet) -> None:
-    """Print a summary of generated test scenarios.
-
-    Args:
-        scenario_set: The generated scenario set.
-    """
-    table = Table(title="Generated Test Scenarios")
-    table.add_column("Metric", style="cyan")
-    table.add_column("Count", style="green", justify="right")
-
-    table.add_row("Ground Truths", str(len(scenario_set.ground_truths)))
-    table.add_row("Feature Files", str(len(scenario_set.features)))
-    table.add_row("Scenarios", str(len(scenario_set.scenarios)))
-    table.add_row("Workflow Ground Truths", str(len(scenario_set.workflow_ground_truths)))
-    table.add_row("Workflow Scenarios", str(len(scenario_set.workflow_scenarios)))
-    table.add_row("Total Scenarios", str(scenario_set.total_scenarios))
 
     console.print(table)
 
@@ -275,7 +215,6 @@ def init(
 
     config_path = get_config_path(config)
 
-    # Check if config already exists
     if config_path.exists():
         overwrite = Confirm.ask(
             f"[yellow]Configuration file already exists at {config_path}.[/yellow]\n"
@@ -293,7 +232,6 @@ def init(
         )
     )
 
-    # Prompt for required values
     project_code = Prompt.ask(
         "\n[cyan]Project code[/cyan] (unique identifier for your MCP server)",
         default="my-mcp-server",
@@ -304,7 +242,6 @@ def init(
         default="python -m my_server",
     )
 
-    # Prompt for LLM provider
     console.print("\n[dim]Available LLM providers: openai, anthropic, gemini[/dim]")
     llm_provider = Prompt.ask(
         "[cyan]LLM provider[/cyan]",
@@ -312,7 +249,6 @@ def init(
         default="gemini",
     )
 
-    # Create configuration
     try:
         probe_config = create_default_config(
             project_code=project_code,
@@ -360,8 +296,9 @@ def generate(
     """Generate test cases from MCP server discovery.
 
     Connects to the MCP server specified in the configuration,
-    discovers available tools, resources, and prompts, then
-    generates BDD test scenarios using LLM-powered analysis.
+    discovers available tools, resources, and prompts, indexes
+    the source code via AST, then generates BDD Gherkin test
+    scenarios using LLM-powered analysis with ChromaDB context.
     """
     setup_logging(verbose)
     logger = logging.getLogger(__name__)
@@ -378,7 +315,6 @@ def generate(
         )
     )
 
-    # Run the async generation pipeline
     asyncio.run(_run_generation(probe_config, logger))
 
 
@@ -389,8 +325,6 @@ async def _run_generation(probe_config: MCPProbeConfig, logger: logging.Logger) 
         probe_config: The loaded configuration.
         logger: Logger instance.
     """
-    output_dir = probe_config.get_output_path()
-
     # Step 0: Connect to mcp-probe-service
     console.print("\n[bold]Stage 0: Connecting to mcp-probe-service[/bold]")
 
@@ -403,21 +337,17 @@ async def _run_generation(probe_config: MCPProbeConfig, logger: logging.Logger) 
 
         try:
             async with MCPProbeServiceClient(probe_config.service_url) as service_client:
-                # Check service health
                 await service_client.health_check()
                 progress.update(task, description="Service connected!")
 
-                # Ensure project exists
-                # progress.update(task, description="Ensuring project exists...") # silenced
                 await service_client.ensure_project_exists(
                     project_code=probe_config.project_code,
                     name=probe_config.project_code,
                     server_command=probe_config.server_command,
                 )
 
-                # Continue with the rest of the pipeline within the service client context
                 await _run_generation_with_service(
-                    probe_config, service_client, output_dir, logger
+                    probe_config, service_client, logger
                 )
 
         except ServiceConnectionError as e:
@@ -438,7 +368,6 @@ async def _run_generation(probe_config: MCPProbeConfig, logger: logging.Logger) 
 async def _run_generation_with_service(
     probe_config: MCPProbeConfig,
     service_client: MCPProbeServiceClient,
-    output_dir: Path,
     logger: logging.Logger,
 ) -> None:
     """Run generation pipeline with service client context.
@@ -446,12 +375,11 @@ async def _run_generation_with_service(
     Args:
         probe_config: The loaded configuration.
         service_client: Connected service client.
-        output_dir: Output directory for generated tests.
         logger: Logger instance.
     """
     console.print("[green]✓[/green] Connected to mcp-probe-service")
 
-    # Step 1: Discovery
+    # Step 1: MCP Discovery
     console.print("\n[bold]Stage 1: Server Discovery[/bold]")
 
     with Progress(
@@ -479,218 +407,241 @@ async def _run_generation_with_service(
         )
         raise typer.Exit(code=1)
 
-    # Step 2: Test Generation
-    console.print("\n[bold]Stage 2: Test Generation[/bold]")
+    # Step 2: AST Codebase Indexing
+    console.print("\n[bold]Stage 2: AST Codebase Indexing[/bold]")
 
-    llm_config = probe_config.get_generator_llm_config()
-    generator = ClientTestGenerator(llm_config)
+    source_path = None
+    if probe_config.mcp_source_code_path:
+        source_path = Path(probe_config.mcp_source_code_path)
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Generating ground truth...", total=None)
-
-        try:
-            # Check if tests exist and if we should skip generation
-            existing_tests = None
-            if not probe_config.regenerate_tests:
-                progress.update(task, description="Checking for existing tests...")
-                existing_tests = await service_client.get_scenario_set(probe_config.project_code)
-            
-            if existing_tests:
-                console.print("\n[yellow]Tests already exist for this project. Skipping generation.[/yellow]")
-                console.print("[dim]Use 'regenerate_tests': true in config to force regeneration.[/dim]")
-                
-                # We need a ScenarioSet object for the next steps, so reconstruct it from stored data
-                # Note: This might be incomplete depending on what's stored vs what ScenarioSet expects,
-                # but getting the scenario set from service usually returns the JSON dump.
-                # For now, we'll try to validate it into the model.
-                try:
-                    scenario_set = ScenarioSet(**existing_tests)
-                    console.print(f"[green]✓[/green] Loaded existing tests (version {existing_tests.get('version', 'unknown')})")
-                except Exception as e:
-                    console.print(f"[red]Warning:[/red] Failed to parse existing tests: {e}")
-                    console.print("Proceeding with regeneration...")
-                    existing_tests = None
-
-            if not existing_tests:
-                progress.update(task, description="Generating test scenarios...")
-                scenario_set = await generator.generate_scenarios(
-                    discovery_result,
-                    max_test_cases=probe_config.max_test_cases,
-                    max_ground_truths=probe_config.max_ground_truths,
-                )
-
-        except GeneratorError as e:
-            console.print(f"\n[red]Error:[/red] Test generation failed: {e}")
-            raise typer.Exit(code=1)
-
-    print_generation_summary(scenario_set)
-
-    # Step 3: Store in mcp-probe-service
-    console.print("\n[bold]Stage 3: Storing Tests in Service[/bold]")
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Storing scenarios in service...", total=None)
-
-        try:
-            # Only store if we generated new tests (not existing ones)
-            if not existing_tests:
-                version = await store_scenario_set_in_service(
-                    service_client,
-                    probe_config.project_code,
-                    scenario_set,
-                )
-                progress.update(task, description=f"Stored as version {version}")
-            else:
-                 # If we loaded existing tests, we don't need to store, 
-                 # but we might want the version for display
-                 version = existing_tests.get('version', 'existing')
-                 progress.update(task, description=f"Using existing version {version}")
-
-        except ServiceAPIError as e:
-            console.print(f"\n[red]Error:[/red] Failed to store tests: {e.detail}")
-            raise typer.Exit(code=1)
-
-    console.print(
-        f"[green]✓[/green] Tests stored in service (version {version})"
-    )
-
-    # Step 4: Generate executable Behave tests
-    console.print("\n[bold]Stage 4: Generating Executable Tests[/bold]")
-
-    implementor = TestImplementor(llm_config)
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Generating feature files...", total=None)
-
-        try:
-            progress.update(task, description="Generating step definitions (LLM)...")
-            implementation = await implementor.implement_tests(
-                scenario_set=scenario_set,
-                output_dir=output_dir,
-                project_code=probe_config.project_code,
-                service_url=probe_config.service_url,
-                server_command=probe_config.server_command,
-            )
-
-        except TestImplementorError as e:
-            console.print(f"\n[red]Error:[/red] Test implementation failed: {e}")
-            raise typer.Exit(code=1)
-
-    # Also save local backup
-    save_scenario_set_local(scenario_set, output_dir)
-    
-    # NEW: Zip and store artifacts in service
-    if not existing_tests: # version is defined
-        # with Progress(
-        #     SpinnerColumn(),
-        #     TextColumn("[progress.description]{task.description}"),
-        #     console=console,
-        # ) as progress:
-        #     task = progress.add_task("Uploading artifacts to service...", total=None)
-            
-        #     try:
-        #         # Create zip archive
-        #         zip_base_name = output_dir / "artifacts"
-        #         zip_path_str = shutil.make_archive(str(zip_base_name), 'zip', output_dir)
-        #         zip_path = Path(zip_path_str)
-                
-        #         # Upload
-        #         await service_client.store_test_artifacts(
-        #             project_code=probe_config.project_code,
-        #             version=version,
-        #             artifacts_path=zip_path
-        #         )
-                
-        #         # Cleanup zip
-        #         if zip_path.exists():
-        #             zip_path.unlink()
-                    
-        #         progress.update(task, description="Artifacts uploaded successfully")
-        #         console.print(f"[green]✓[/green] Artifacts stored in service")
-                
-        #     except Exception as e:
-        #         console.print(f"\n[red]Warning:[/red] Failed to upload artifacts: {e}")
-        #         # Don't fail the whole process just for upload failure
+    if source_path and source_path.is_dir():
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             console=console,
         ) as progress:
-            task = progress.add_task("Uploading artifacts to service...", total=None)
-            
-            # Create a temporary directory to hold the zip file
-            # This prevents the "zipping the zip file" corruption issue
-            with tempfile.TemporaryDirectory() as temp_dir:
-                try:
-                    progress.update(task, description="Creating zip archive...")
-                    
-                    # Create zip OUTSIDE the output_dir
-                    zip_base_name = Path(temp_dir) / "artifacts"
-                    
-                    # Run strictly synchronous to ensure flush
-                    zip_path_str = shutil.make_archive(
-                        str(zip_base_name), 
-                        'zip', 
-                        root_dir=output_dir
-                    )
-                    zip_path = Path(zip_path_str)
-                    
-                    # --- SANITY CHECK ---
-                    # Verify the zip is valid locally before sending
-                    if not zipfile.is_zipfile(zip_path):
-                        raise ValueError("Generated zip is invalid (header check)")
-                        
-                    with zipfile.ZipFile(zip_path, 'r') as z:
-                        bad_file = z.testzip()
-                        if bad_file:
-                             raise ValueError(f"Generated zip has corrupt file: {bad_file}")
-                    # --------------------
+            task = progress.add_task("Indexing source code with AST parser...", total=None)
 
-                    progress.update(task, description="Uploading to service...")
-                    
-                    # Upload (Client reads into memory -> sends)
+            try:
+                indexer = ASTIndexer()
+                codebase_index = indexer.index_directory(source_path)
+                progress.update(
+                    task,
+                    description=(
+                        f"Indexed {codebase_index.total_entities} entities "
+                        f"from {codebase_index.total_files} files"
+                    ),
+                )
+            except ASTIndexerError as e:
+                console.print(f"\n[red]Error:[/red] AST indexing failed: {e}")
+                console.print("[dim]Continuing without code context...[/dim]")
+                codebase_index = None
+
+        if codebase_index and codebase_index.total_entities > 0:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+            ) as progress:
+                task = progress.add_task("Sending code entities to ChromaDB...", total=None)
+                try:
+                    result = await indexer.index_to_chromadb(
+                        service_client=service_client,
+                        project_code=probe_config.project_code,
+                        index=codebase_index,
+                    )
+                    indexed_count = result.get("indexed", codebase_index.total_entities)
+                    progress.update(
+                        task,
+                        description=f"Indexed {indexed_count} entities in ChromaDB",
+                    )
+                    console.print(
+                        f"[green]✓[/green] Codebase indexed: {indexed_count} entities "
+                        f"from {codebase_index.total_files} files"
+                    )
+                except Exception as e:
+                    console.print(
+                        f"\n[yellow]Warning:[/yellow] ChromaDB indexing failed: {e}"
+                    )
+                    console.print("[dim]Continuing without indexed code context...[/dim]")
+        else:
+            console.print("[dim]No code entities found to index.[/dim]")
+    else:
+        console.print(
+            "[yellow]⚠ No source code path configured.[/yellow]"
+        )
+        console.print(
+            "[dim]Provide --mcp-source-code or set mcp_source_code_path in config "
+            "for AST-based code context in test generation.[/dim]"
+        )
+
+    # Step 3: Gherkin Test Generation
+    console.print("\n[bold]Stage 3: Gherkin Test Generation[/bold]")
+
+    llm_config = probe_config.get_generator_llm_config()
+    llm_client = create_llm_client(llm_config)
+
+    unit_generator = UnitTestGenerator(
+        llm_client=llm_client,
+        service_client=service_client,
+        project_code=probe_config.project_code,
+    )
+    integration_generator = IntegrationTestGenerator(
+        llm_client=llm_client,
+        service_client=service_client,
+        project_code=probe_config.project_code,
+    )
+
+    # Generate unit tests
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Generating unit test feature files...", total=None)
+
+        try:
+            unit_result = await unit_generator.generate_all(discovery_result)
+            progress.update(
+                task,
+                description=(
+                    f"Generated {unit_result.total_feature_files} unit feature files "
+                    f"({unit_result.total_scenarios} scenarios)"
+                ),
+            )
+        except GeneratorError as e:
+            console.print(f"\n[red]Error:[/red] Unit test generation failed: {e}")
+            unit_result = None
+
+    if unit_result:
+        console.print(
+            f"[green]✓[/green] Unit tests: {unit_result.total_feature_files} feature files, "
+            f"{unit_result.total_scenarios} scenarios "
+            f"({unit_result.tools_covered} tools, {unit_result.resources_covered} resources, "
+            f"{unit_result.prompts_covered} prompts)"
+        )
+        if unit_result.has_errors:
+            for error in unit_result.errors:
+                console.print(f"  [yellow]⚠[/yellow] {error}")
+
+    # Generate integration tests
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        console=console,
+    ) as progress:
+        task = progress.add_task(
+            "Generating integration test feature file...", total=None
+        )
+
+        try:
+            integration_result = await integration_generator.generate_all(discovery_result)
+            progress.update(
+                task,
+                description=(
+                    f"Generated {integration_result.total_scenarios} integration scenarios "
+                    f"({integration_result.workflows_identified} workflows)"
+                ),
+            )
+        except GeneratorError as e:
+            console.print(f"\n[red]Error:[/red] Integration test generation failed: {e}")
+            integration_result = None
+
+    if integration_result and integration_result.total_feature_files > 0:
+        console.print(
+            f"[green]✓[/green] Integration tests: "
+            f"{integration_result.total_scenarios} scenarios "
+            f"({integration_result.workflows_identified} workflows identified)"
+        )
+        if integration_result.has_errors:
+            for error in integration_result.errors:
+                console.print(f"  [yellow]⚠[/yellow] {error}")
+    elif integration_result:
+        console.print(
+            "[dim]No integration workflow patterns identified.[/dim]"
+        )
+
+    # Collect all feature files and save/store
+    all_features = []
+    if unit_result:
+        all_features.extend(unit_result.feature_files)
+    if integration_result:
+        all_features.extend(integration_result.feature_files)
+
+    if all_features:
+        # Save feature files locally
+        output_dir = probe_config.get_output_path() / "features"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for feature in all_features:
+            feature_path = output_dir / feature.filename
+            feature_path.write_text(feature.content)
+
+        console.print(
+            f"\n[green]✓[/green] Saved {len(all_features)} feature files to "
+            f"[cyan]{output_dir}[/cyan]"
+        )
+
+        # Store scenario set metadata in service
+        total_scenarios = sum(f.scenario_count for f in all_features)
+        scenario_set = {
+            "unit_features": [
+                f.model_dump() for f in all_features if f.target_type != "integration"
+            ],
+            "integration_feature": next(
+                (f.model_dump() for f in all_features if f.target_type == "integration"),
+                None,
+            ),
+            "total_scenarios": total_scenarios,
+            "feature_file_count": len(all_features),
+        }
+        tc_version = None
+        try:
+            tc_response = await service_client.store_scenario_set(
+                project_code=probe_config.project_code,
+                scenario_set=scenario_set,
+            )
+            tc_version = tc_response.version
+            console.print(
+                f"[green]✓[/green] Stored scenario set v{tc_version} "
+                f"in mcp-probe-service"
+            )
+        except ServiceClientError as e:
+            console.print(
+                f"[yellow]Warning:[/yellow] Failed to store scenario set in service: {e}"
+            )
+
+        # Upload feature files as artifacts to the service for persistence
+        if tc_version is not None:
+            try:
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    zip_path = Path(tmpdir) / "artifacts.zip"
+                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for feature in all_features:
+                            zf.writestr(
+                                f"features/{feature.filename}",
+                                feature.content,
+                            )
+
                     await service_client.store_test_artifacts(
                         project_code=probe_config.project_code,
-                        version=version,
-                        artifacts_path=zip_path
+                        version=tc_version,
+                        artifacts_path=zip_path,
                     )
-                    
-                    progress.update(task, description="Artifacts uploaded successfully")
-                    console.print(f"[green]✓[/green] Artifacts stored in service")
-                    
-                except Exception as e:
-                    console.print(f"\n[red]Warning:[/red] Failed to upload artifacts: {e}")
-                    # Don't fail the whole process just for upload failure
 
-    console.print(f"\n[green]✓[/green] Tests generated to [cyan]{output_dir}[/cyan]")
-    console.print(
-        f"  - Feature files: {len(implementation.feature_files)} files\n"
-        f"  - Step definitions: {implementation.step_definitions_file}\n"
-        f"  - Environment: {implementation.environment_file}\n"
-        f"  - Ground truth client: {implementation.ground_truth_client_file}"
-    )
-
-    # Note about fuzzing (not yet implemented)
-    console.print(
-        "\n[dim]Note: Fuzzing module not yet implemented. "
-        "Fuzz scenarios will be added in a future version.[/dim]"
-    )
-
-    console.print(
-        "\n[dim]Next step:[/dim] Run [cyan]mcp-probe run[/cyan] to execute tests"
-    )
+                console.print(
+                    f"[green]✓[/green] Uploaded {len(all_features)} feature files "
+                    f"as artifacts to mcp-probe-service"
+                )
+            except Exception as e:
+                console.print(
+                    f"[yellow]Warning:[/yellow] Failed to upload artifacts "
+                    f"to service: {e}"
+                )
+    else:
+        console.print(
+            "\n[yellow]⚠ No feature files were generated.[/yellow]"
+        )
 
 
 @app.command()
@@ -734,31 +685,16 @@ def run(
         )
     )
 
-    output_dir = probe_config.get_output_path()
-    scenario_set_file = output_dir / "scenario_set.json"
-
-    # Check if tests have been generated
-    if not scenario_set_file.exists():
-        console.print(
-            f"[red]Error:[/red] No generated tests found at {output_dir}",
-            style="bold",
-        )
-        console.print(
-            "\nRun [cyan]mcp-probe generate[/cyan] first to generate tests."
-        )
-        raise typer.Exit(code=1)
-
-    # Placeholder for Test Runner (not yet implemented)
     console.print("\n[yellow]⚠ Test Runner Not Implemented[/yellow]")
     console.print(
         Panel(
             "The Test Runner module (Task 11.0) has not been implemented yet.\n\n"
             "This command will execute BDD Behave tests once the following\n"
             "components are completed:\n"
-            "  • runner/executor.py - BDD Behave test executor\n"
-            "  • runner/server_manager.py - MCP server lifecycle management\n"
-            "  • compliance/middleware.py - Protocol validation interceptor\n"
-            "  • oracle/evaluator.py - Semantic assertion evaluator",
+            "  - runner/executor.py - BDD Behave test executor\n"
+            "  - runner/server_manager.py - MCP server lifecycle management\n"
+            "  - compliance/middleware.py - Protocol validation interceptor\n"
+            "  - oracle/evaluator.py - Semantic assertion evaluator",
             title="Not Implemented",
             border_style="yellow",
         )
@@ -810,16 +746,15 @@ def report(
 
     output_dir = probe_config.get_output_path()
 
-    # Placeholder for Report Generator (not yet implemented)
     console.print("\n[yellow]⚠ Report Generator Not Implemented[/yellow]")
     console.print(
         Panel(
             "The Report Generator module (Task 14.0) has not been implemented yet.\n\n"
             "This command will generate HTML reports once the following\n"
             "components are completed:\n"
-            "  • reporting/generator.py - HTML report generator\n"
-            "  • reporting/templates/ - HTML report templates\n"
-            "  • results/classifier.py - Failure classification logic\n\n"
+            "  - reporting/generator.py - HTML report generator\n"
+            "  - reporting/templates/ - HTML report templates\n"
+            "  - results/classifier.py - Failure classification logic\n\n"
             f"Reports will be saved to: {output_dir / 'report.html'}",
             title="Not Implemented",
             border_style="yellow",
@@ -852,12 +787,13 @@ def full(
     """Run the complete test pipeline: generate -> run -> report.
 
     This command orchestrates the full testing workflow:
-    1. Generate test cases from server discovery
+    1. Generate test cases from server discovery + AST indexing
     2. Execute tests against the MCP server
     3. Generate HTML report
 
-    Note: Currently only the generate step is fully implemented.
-    Run and report steps will fail with NotImplemented errors.
+    Note: Currently only the discovery step is fully implemented.
+    AST indexing, generation, run, and report steps require further
+    implementation.
     """
     setup_logging(verbose)
 
@@ -873,7 +809,7 @@ def full(
         )
     )
 
-    # Step 1: Generate (this works)
+    # Phase 1: Generate
     console.print("\n[bold blue]═══ Phase 1: Test Generation ═══[/bold blue]\n")
 
     try:
@@ -883,16 +819,16 @@ def full(
             console.print("\n[red]Pipeline aborted due to generation failure.[/red]")
             raise
 
-    # Step 2: Run (placeholder - will fail)
+    # Phase 2: Run (placeholder)
     console.print("\n[bold blue]═══ Phase 2: Test Execution ═══[/bold blue]\n")
     console.print(
         "[yellow]⚠ Skipping test execution - Test Runner not implemented.[/yellow]"
     )
     console.print(
-        "[dim]The following phases require the Test Runner module (Task 11.0).[/dim]\n"
+        "[dim]This phase requires the Test Runner module (Task 11.0).[/dim]\n"
     )
 
-    # Step 3: Report (placeholder - would fail)
+    # Phase 3: Report (placeholder)
     console.print("[bold blue]═══ Phase 3: Report Generation ═══[/bold blue]\n")
     console.print(
         "[yellow]⚠ Skipping report generation - Report Generator not implemented.[/yellow]"
@@ -904,11 +840,12 @@ def full(
     # Summary
     console.print(
         Panel(
-            "[green]✓[/green] Test generation completed successfully.\n"
+            "[green]✓[/green] Discovery completed successfully.\n"
+            "[green]✓[/green] AST indexing + Gherkin generation completed.\n"
             "[yellow]⚠[/yellow] Test execution skipped (not implemented).\n"
             "[yellow]⚠[/yellow] Report generation skipped (not implemented).\n\n"
-            "[dim]Once all modules are implemented, the full pipeline will\n"
-            "execute all phases automatically.[/dim]",
+            "[dim]Once Test Runner (Task 11.0) and Report Generator (Task 14.0)\n"
+            "are implemented, the full pipeline will execute all phases.[/dim]",
             title="Pipeline Summary",
             border_style="cyan",
         )

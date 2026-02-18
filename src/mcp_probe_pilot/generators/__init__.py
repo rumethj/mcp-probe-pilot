@@ -1,21 +1,15 @@
 """Test Generators module.
 
-This module provides LLM-powered test generation capabilities:
-- Client discovery-based test generation
-- Ground truth specification generation
-- BDD Gherkin scenario generation
-- Executable Behave test implementation
+This module provides LLM-powered Gherkin test generation capabilities:
+- Unit test generation (one feature file per tool/resource/prompt)
+- Integration test generation (workflow scenarios in a single feature file)
 
-The generation follows a multi-phase approach:
-1. Ground truth generation (isolated context - no scenario information)
-2. Scenario generation (references ground truth by ID only)
-3. Test implementation (converts Gherkin to executable Behave tests)
-
-This separation prevents ground truth poisoning by ensuring ground truth
-is derived purely from capability definitions.
+The generators combine MCP discovery results with AST-indexed codebase
+context (via ChromaDB) to produce comprehensive BDD Gherkin test scenarios.
 """
 
-from .client_generator import ClientTestGenerator, GeneratorError
+from .base_generator import BaseTestGenerator, GeneratorError
+from .integration_test_generator import IntegrationTestGenerator
 from .llm_client import (
     AnthropicClient,
     BaseLLMClient,
@@ -25,27 +19,17 @@ from .llm_client import (
     OpenAIClient,
     create_llm_client,
 )
-from .models import (
-    FeatureFile,
-    GeneratedScenario,
-    GroundTruthSpec,
-    ScenarioCategory,
-    ScenarioSet,
-    TargetType,
-    WorkflowGroundTruth,
-    WorkflowScenario,
-    WorkflowStep,
-)
-from .test_implementor import TestImplementation, TestImplementor, TestImplementorError
+from .models import GeneratedFeatureFile, GenerationResult, WorkflowType
+from .unit_test_generator import UnitTestGenerator
 
 __all__ = [
-    # Main generator
-    "ClientTestGenerator",
+    # Base generator
+    "BaseTestGenerator",
     "GeneratorError",
-    # Test implementor
-    "TestImplementor",
-    "TestImplementorError",
-    "TestImplementation",
+    # Unit test generator
+    "UnitTestGenerator",
+    # Integration test generator
+    "IntegrationTestGenerator",
     # LLM clients
     "BaseLLMClient",
     "OpenAIClient",
@@ -55,14 +39,7 @@ __all__ = [
     "LLMClientError",
     "create_llm_client",
     # Models
-    "TargetType",
-    "ScenarioCategory",
-    "GroundTruthSpec",
-    "GeneratedScenario",
-    "FeatureFile",
-    "ScenarioSet",
-    # Workflow models
-    "WorkflowStep",
-    "WorkflowGroundTruth",
-    "WorkflowScenario",
+    "GeneratedFeatureFile",
+    "GenerationResult",
+    "WorkflowType",
 ]

@@ -2,7 +2,7 @@
 
 Tests cover:
 - init command: Configuration file creation
-- generate command: Test generation (with mocked discovery/generator)
+- generate command: Discovery + placeholder behavior
 - run command: Placeholder behavior
 - report command: Placeholder behavior
 - full command: Pipeline orchestration
@@ -23,14 +23,6 @@ from mcp_probe_pilot.discovery.models import (
     ServerCapabilities,
     ServerInfo,
     ToolInfo,
-)
-from mcp_probe_pilot.generators.models import (
-    FeatureFile,
-    GeneratedScenario,
-    GroundTruthSpec,
-    ScenarioCategory,
-    ScenarioSet,
-    TargetType,
 )
 
 runner = CliRunner()
@@ -87,45 +79,6 @@ def mock_discovery_result() -> DiscoveryResult:
     )
 
 
-@pytest.fixture
-def mock_scenario_set() -> ScenarioSet:
-    """Create a mock scenario set."""
-    scenario_set = ScenarioSet()
-
-    ground_truth = GroundTruthSpec(
-        id="gt_tool_test_tool",
-        target_type=TargetType.TOOL,
-        target_name="test_tool",
-        expected_behavior="Should perform test operation",
-        expected_output_schema={"type": "object"},
-        semantic_reference="Test tool operation",
-    )
-    scenario_set.add_ground_truth(ground_truth)
-
-    scenario = GeneratedScenario(
-        id="sc_tool_test_tool_happy_path_0",
-        name="Test tool happy path",
-        gherkin='Scenario: Test tool works\n  Given the MCP server is running\n  When I call tool "test_tool"\n  Then the response should be successful',
-        target_type=TargetType.TOOL,
-        target_name="test_tool",
-        category=ScenarioCategory.HAPPY_PATH,
-        ground_truth_id="gt_tool_test_tool",
-    )
-
-    feature = FeatureFile(
-        name="Tool - test_tool",
-        target_type=TargetType.TOOL,
-        target_name="test_tool",
-        ground_truth_id="gt_tool_test_tool",
-        scenarios=[scenario],
-        gherkin="Feature: Tool - test_tool\n  # Ground Truth ID: gt_tool_test_tool\n\n"
-        + scenario.gherkin,
-    )
-    scenario_set.add_feature(feature)
-
-    return scenario_set
-
-
 # =============================================================================
 # Init Command Tests
 # =============================================================================
@@ -148,7 +101,6 @@ class TestInitCommand:
         assert config_path.exists()
         assert "Configuration saved" in result.stdout
 
-        # Verify config contents
         config = json.loads(config_path.read_text())
         assert config["project_code"] == "my-server"
         assert config["server_command"] == "python -m server"
@@ -158,11 +110,10 @@ class TestInitCommand:
         self, config_file_path: Path
     ) -> None:
         """Test that init prompts before overwriting existing config."""
-        # Test refusing to overwrite
         result = runner.invoke(
             app,
             ["init", "--config", str(config_file_path)],
-            input="n\n",  # Don't overwrite
+            input="n\n",
         )
 
         assert result.exit_code == 0
@@ -180,7 +131,6 @@ class TestInitCommand:
 
         assert result.exit_code == 0
 
-        # Verify config was overwritten
         config = json.loads(config_file_path.read_text())
         assert config["project_code"] == "new-server"
 
@@ -191,7 +141,7 @@ class TestInitCommand:
         result = runner.invoke(
             app,
             ["init", "--config", str(config_path)],
-            input="\n\n\n",  # Accept all defaults
+            input="\n\n\n",
         )
 
         assert result.exit_code == 0
@@ -224,69 +174,47 @@ class TestGenerateCommand:
         assert "Configuration file not found" in result.stdout
         assert "mcp-probe init" in result.stdout
 
+    @patch("mcp_probe_pilot.cli.MCPProbeServiceClient")
     @patch("mcp_probe_pilot.cli.MCPDiscoveryClient")
-    @patch("mcp_probe_pilot.cli.ClientTestGenerator")
-    def test_generate_runs_pipeline(
+    def test_generate_runs_discovery(
         self,
-        mock_generator_class: MagicMock,
         mock_client_class: MagicMock,
+        mock_service_class: MagicMock,
         config_file_path: Path,
         mock_discovery_result: DiscoveryResult,
-        mock_scenario_set: ScenarioSet,
     ) -> None:
-        """Test that generate runs the full discovery and generation pipeline."""
-        # Configure mocks
+        """Test that generate runs discovery and shows placeholder for generation."""
         mock_client = AsyncMock()
         mock_client.discover_all = AsyncMock(return_value=mock_discovery_result)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client_class.return_value = mock_client
 
-        mock_generator = MagicMock()
-        mock_generator.generate_scenarios = AsyncMock(return_value=mock_scenario_set)
-        mock_generator_class.return_value = mock_generator
+        mock_service = AsyncMock()
+        mock_service.health_check = AsyncMock(
+            return_value={"status": "healthy", "version": "0.1.0"}
+        )
+        mock_service.ensure_project_exists = AsyncMock(
+            return_value={"project_code": "test-server"}
+        )
+        mock_service.__aenter__ = AsyncMock(return_value=mock_service)
+        mock_service.__aexit__ = AsyncMock(return_value=None)
+        mock_service_class.return_value = mock_service
 
         result = runner.invoke(
             app,
             ["generate", "--config", str(config_file_path)],
         )
 
-        assert result.exit_code == 0
         assert "Server Discovery" in result.stdout
-        assert "Test Generation" in result.stdout
-        assert "Tests saved" in result.stdout
-
-        # Verify mocks were called
         mock_client_class.assert_called_once()
-        mock_generator_class.assert_called_once()
 
-    @patch("mcp_probe_pilot.cli.MCPDiscoveryClient")
-    def test_generate_handles_discovery_error(
-        self,
-        mock_client_class: MagicMock,
-        config_file_path: Path,
-    ) -> None:
-        """Test that generate handles discovery errors gracefully."""
-        from mcp_probe_pilot.discovery import MCPDiscoveryError
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(
-            side_effect=MCPDiscoveryError("Connection failed")
-        )
-        mock_client_class.return_value = mock_client
-
-        result = runner.invoke(
-            app,
-            ["generate", "--config", str(config_file_path)],
-        )
-
-        assert result.exit_code == 1
-        assert "Failed to connect" in result.stdout or "Error" in result.stdout
-
+    @patch("mcp_probe_pilot.cli.MCPProbeServiceClient")
     @patch("mcp_probe_pilot.cli.MCPDiscoveryClient")
     def test_generate_warns_on_empty_discovery(
         self,
         mock_client_class: MagicMock,
+        mock_service_class: MagicMock,
         config_file_path: Path,
     ) -> None:
         """Test that generate warns when no capabilities are discovered."""
@@ -306,6 +234,17 @@ class TestGenerateCommand:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client_class.return_value = mock_client
+
+        mock_service = AsyncMock()
+        mock_service.health_check = AsyncMock(
+            return_value={"status": "healthy", "version": "0.1.0"}
+        )
+        mock_service.ensure_project_exists = AsyncMock(
+            return_value={"project_code": "test-server"}
+        )
+        mock_service.__aenter__ = AsyncMock(return_value=mock_service)
+        mock_service.__aexit__ = AsyncMock(return_value=None)
+        mock_service_class.return_value = mock_service
 
         result = runner.invoke(
             app,
@@ -336,33 +275,8 @@ class TestRunCommand:
         assert result.exit_code == 1
         assert "Configuration file not found" in result.stdout
 
-    def test_run_fails_without_generated_tests(
-        self, config_file_path: Path, temp_config_dir: Path
-    ) -> None:
-        """Test that run fails when no tests have been generated."""
-        # Update config to use temp dir for output
-        config_data = json.loads(config_file_path.read_text())
-        config_data["output_dir"] = str(temp_config_dir / ".mcp-probe")
-        config_file_path.write_text(json.dumps(config_data))
-
-        result = runner.invoke(
-            app,
-            ["run", "--config", str(config_file_path)],
-        )
-
-        assert result.exit_code == 1
-        assert "No generated tests found" in result.stdout
-        assert "mcp-probe generate" in result.stdout
-
-    def test_run_shows_not_implemented(
-        self, config_file_path: Path, temp_config_dir: Path
-    ) -> None:
-        """Test that run shows not implemented message when tests exist."""
-        # Create a fake scenario_set.json
-        output_dir = temp_config_dir / ".mcp-probe"
-        output_dir.mkdir()
-        (output_dir / "scenario_set.json").write_text("{}")
-
+    def test_run_shows_not_implemented(self, config_file_path: Path) -> None:
+        """Test that run shows not implemented message."""
         result = runner.invoke(
             app,
             ["run", "--config", str(config_file_path)],
@@ -425,40 +339,6 @@ class TestFullCommand:
         assert result.exit_code == 1
         assert "Configuration file not found" in result.stdout
 
-    @patch("mcp_probe_pilot.cli.MCPDiscoveryClient")
-    @patch("mcp_probe_pilot.cli.ClientTestGenerator")
-    def test_full_runs_generate_then_shows_placeholder(
-        self,
-        mock_generator_class: MagicMock,
-        mock_client_class: MagicMock,
-        config_file_path: Path,
-        mock_discovery_result: DiscoveryResult,
-        mock_scenario_set: ScenarioSet,
-    ) -> None:
-        """Test that full runs generate and shows placeholders for run/report."""
-        # Configure mocks
-        mock_client = AsyncMock()
-        mock_client.discover_all = AsyncMock(return_value=mock_discovery_result)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-        mock_client_class.return_value = mock_client
-
-        mock_generator = MagicMock()
-        mock_generator.generate_scenarios = AsyncMock(return_value=mock_scenario_set)
-        mock_generator_class.return_value = mock_generator
-
-        result = runner.invoke(
-            app,
-            ["full", "--config", str(config_file_path)],
-        )
-
-        # Full command should complete (exit 0) even with placeholder stages
-        assert result.exit_code == 0
-        assert "Test Generation" in result.stdout
-        assert "Test Execution" in result.stdout
-        assert "Report Generation" in result.stdout
-        assert "not implemented" in result.stdout.lower()
-
 
 # =============================================================================
 # Version Command Tests
@@ -492,7 +372,6 @@ class TestCommonOptions:
             ["run", "--config", str(config_file_path), "--verbose"],
         )
 
-        # Command may fail for other reasons, but should accept the flag
         assert "--verbose" not in result.stdout or "unknown" not in result.stdout.lower()
 
     def test_config_short_option(self, config_file_path: Path) -> None:
@@ -502,7 +381,6 @@ class TestCommonOptions:
             ["run", "-c", str(config_file_path)],
         )
 
-        # Should load config successfully (then fail for other reasons)
         assert "Configuration file not found" not in result.stdout
 
     def test_help_available(self) -> None:

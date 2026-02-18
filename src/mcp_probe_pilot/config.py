@@ -241,11 +241,6 @@ class MCPProbeConfig(BaseModel):
         gt=0,
         description="Maximum number of test cases to generate",
     )
-    max_ground_truths: Optional[int] = Field(
-        default=None,
-        gt=0,
-        description="Maximum number of ground truths to generate",
-    )
     mcp_source_code_path: Optional[str] = Field(
         default=None,
         description="Path to the MCP server source code",

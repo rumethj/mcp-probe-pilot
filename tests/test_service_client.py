@@ -4,18 +4,17 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from mcp_probe_pilot.service_client import (
-    GroundTruthResponse,
     MCPProbeServiceClient,
     ServiceAPIError,
     ServiceClientError,
     ServiceConnectionError,
-    WorkflowGroundTruthResponse,
 )
 
 
 # Rename to avoid pytest collection warning
 class TestCaseResponseModel:
     """Tests for TestCaseResponse model (renamed to avoid pytest collection)."""
+
     pass
 
 
@@ -57,7 +56,6 @@ class TestMCPProbeServiceClient:
         mock_response.json.return_value = {"status": "healthy", "version": "0.1.0"}
         mock_httpx_client.get.return_value = mock_response
 
-        # Manually set the client
         client._client = mock_httpx_client
 
         result = await client.health_check()
@@ -140,7 +138,7 @@ class TestMCPProbeServiceClient:
             "project_id": 1,
             "version": 1,
             "scenario_count": 5,
-            "ground_truth_count": 3,
+            "feature_file_count": 3,
             "created_at": "2024-01-01T00:00:00",
         }
         mock_httpx_client.post.return_value = mock_response
@@ -148,7 +146,7 @@ class TestMCPProbeServiceClient:
 
         result = await client.store_scenario_set(
             project_code="test-project",
-            scenario_set={"scenarios": [], "ground_truths": {}},
+            scenario_set={"unit_features": [], "integration_feature": None},
         )
 
         assert isinstance(result, TCResponse)
@@ -156,57 +154,89 @@ class TestMCPProbeServiceClient:
         assert result.scenario_count == 5
 
     @pytest.mark.asyncio
-    async def test_get_ground_truth_found(self, client, mock_httpx_client):
-        """Test getting an existing ground truth."""
+    async def test_index_codebase(self, client, mock_httpx_client):
+        """Test indexing codebase via ChromaDB."""
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {
-            "id": "gt_tool_auth_login",
-            "target_type": "tool",
-            "target_name": "auth_login",
-            "expected_behavior": "Authenticates user",
-            "expected_output_schema": {},
-            "valid_input_examples": [],
-            "invalid_input_examples": [],
-            "semantic_reference": "User authentication",
+            "indexed": 15,
+            "project_code": "test-project",
+        }
+        mock_httpx_client.post.return_value = mock_response
+        client._client = mock_httpx_client
+
+        result = await client.index_codebase(
+            project_code="test-project",
+            entities=[{"name": "test_func", "code": "def test(): pass"}],
+        )
+
+        assert result["indexed"] == 15
+
+    @pytest.mark.asyncio
+    async def test_query_codebase(self, client, mock_httpx_client):
+        """Test querying codebase via ChromaDB."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "results": [
+                {"name": "auth_handler", "code": "def auth_handler(): ..."}
+            ]
+        }
+        mock_httpx_client.post.return_value = mock_response
+        client._client = mock_httpx_client
+
+        result = await client.query_codebase(
+            project_code="test-project",
+            query="authentication handler",
+            n_results=5,
+        )
+
+        assert len(result) == 1
+        assert result[0]["name"] == "auth_handler"
+
+    @pytest.mark.asyncio
+    async def test_get_codebase_status(self, client, mock_httpx_client):
+        """Test getting codebase indexing status."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "entity_count": 42,
+            "last_indexed": "2024-01-01T00:00:00",
         }
         mock_httpx_client.get.return_value = mock_response
         client._client = mock_httpx_client
 
-        result = await client.get_ground_truth("test-project", "gt_tool_auth_login")
+        result = await client.get_codebase_status("test-project")
 
-        assert isinstance(result, GroundTruthResponse)
-        assert result.id == "gt_tool_auth_login"
-        assert result.target_name == "auth_login"
+        assert result is not None
+        assert result["entity_count"] == 42
 
     @pytest.mark.asyncio
-    async def test_get_ground_truth_not_found(self, client, mock_httpx_client):
-        """Test getting non-existent ground truth returns None."""
+    async def test_get_codebase_status_not_found(self, client, mock_httpx_client):
+        """Test getting codebase status when not indexed returns None."""
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_httpx_client.get.return_value = mock_response
         client._client = mock_httpx_client
 
-        result = await client.get_ground_truth("test-project", "nonexistent")
+        result = await client.get_codebase_status("test-project")
 
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_list_ground_truths(self, client, mock_httpx_client):
-        """Test listing all ground truths."""
+    async def test_clear_codebase(self, client, mock_httpx_client):
+        """Test clearing codebase index."""
         mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "ground_truths": {"gt_tool_test": {"id": "gt_tool_test"}},
-            "workflow_ground_truths": {},
-        }
-        mock_httpx_client.get.return_value = mock_response
+        mock_response.status_code = 204
+        mock_response.json.return_value = {}
+        mock_httpx_client.delete.return_value = mock_response
         client._client = mock_httpx_client
 
-        result = await client.list_ground_truths("test-project")
+        await client.clear_codebase("test-project")
 
-        assert "ground_truths" in result
-        assert "gt_tool_test" in result["ground_truths"]
+        mock_httpx_client.delete.assert_called_once_with(
+            "/api/projects/test-project/codebase"
+        )
 
     @pytest.mark.asyncio
     async def test_handle_api_error(self, client, mock_httpx_client):
@@ -219,7 +249,7 @@ class TestMCPProbeServiceClient:
         client._client = mock_httpx_client
 
         with pytest.raises(ServiceAPIError) as exc_info:
-            await client.list_ground_truths("test-project")
+            await client.health_check()
 
         assert exc_info.value.status_code == 400
         assert exc_info.value.detail == "Bad request"
@@ -227,11 +257,9 @@ class TestMCPProbeServiceClient:
     @pytest.mark.asyncio
     async def test_ensure_project_exists_creates_new(self, client, mock_httpx_client):
         """Test ensure_project_exists creates project when not found."""
-        # First call returns 404 (project doesn't exist)
         mock_get_response = MagicMock()
         mock_get_response.status_code = 404
 
-        # Second call creates project
         mock_post_response = MagicMock()
         mock_post_response.status_code = 201
         mock_post_response.json.return_value = {
@@ -271,39 +299,6 @@ class TestMCPProbeServiceClient:
 class TestResponseModels:
     """Tests for response model classes."""
 
-    def test_ground_truth_response(self):
-        """Test GroundTruthResponse model."""
-        data = {
-            "id": "gt_tool_test",
-            "target_type": "tool",
-            "target_name": "test",
-            "expected_behavior": "Test behavior",
-            "expected_output_schema": {"type": "object"},
-            "valid_input_examples": [{"input": {}}],
-            "invalid_input_examples": [],
-            "semantic_reference": "Test reference",
-        }
-        response = GroundTruthResponse(**data)
-
-        assert response.id == "gt_tool_test"
-        assert response.target_type == "tool"
-        assert response.expected_output_schema == {"type": "object"}
-
-    def test_workflow_ground_truth_response(self):
-        """Test WorkflowGroundTruthResponse model."""
-        data = {
-            "id": "gt_workflow_test",
-            "workflow_name": "test workflow",
-            "expected_flow": "Step 1 -> Step 2",
-            "step_expectations": [{"step": 1}],
-            "final_outcome": "Success",
-            "error_scenarios": [],
-        }
-        response = WorkflowGroundTruthResponse(**data)
-
-        assert response.id == "gt_workflow_test"
-        assert response.workflow_name == "test workflow"
-
     def test_test_case_response(self):
         """Test TestCaseResponse model."""
         from mcp_probe_pilot.service_client import TestCaseResponse as TCResponse
@@ -313,10 +308,11 @@ class TestResponseModels:
             "project_id": 1,
             "version": 2,
             "scenario_count": 10,
-            "ground_truth_count": 5,
+            "feature_file_count": 5,
             "created_at": "2024-01-01T00:00:00",
         }
         response = TCResponse(**data)
 
         assert response.version == 2
         assert response.scenario_count == 10
+        assert response.feature_file_count == 5

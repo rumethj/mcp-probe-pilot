@@ -2,7 +2,7 @@
 
 This module provides the MCPProbeServiceClient class which handles all
 communication with the mcp-probe-service REST API for storing and
-retrieving test scenarios, ground truths, and reports.
+retrieving test scenarios, reports, and querying the ChromaDB-indexed codebase.
 """
 
 import logging
@@ -44,30 +44,6 @@ class ServiceAPIError(ServiceClientError):
         self.detail = detail
 
 
-class GroundTruthResponse(BaseModel):
-    """Response model for ground truth retrieval."""
-
-    id: str
-    target_type: str
-    target_name: str
-    expected_behavior: str
-    expected_output_schema: dict[str, Any]
-    valid_input_examples: list[dict[str, Any]]
-    invalid_input_examples: list[dict[str, Any]]
-    semantic_reference: str
-
-
-class WorkflowGroundTruthResponse(BaseModel):
-    """Response model for workflow ground truth retrieval."""
-
-    id: str
-    workflow_name: str
-    expected_flow: str
-    step_expectations: list[dict[str, Any]]
-    final_outcome: str
-    error_scenarios: list[dict[str, Any]]
-
-
 class TestCaseResponse(BaseModel):
     """Response model for test case metadata."""
 
@@ -75,7 +51,7 @@ class TestCaseResponse(BaseModel):
     project_id: int
     version: int
     scenario_count: int
-    ground_truth_count: int
+    feature_file_count: int
     created_at: str
 
 
@@ -83,7 +59,8 @@ class MCPProbeServiceClient:
     """HTTP client for mcp-probe-service API.
 
     This client handles all communication with the mcp-probe-service REST API,
-    including storing and retrieving test scenarios, ground truths, and reports.
+    including storing and retrieving test scenarios, reports, and querying
+    the ChromaDB-indexed codebase.
 
     Example:
         ```python
@@ -97,10 +74,11 @@ class MCPProbeServiceClient:
                 scenario_set=scenario_set.model_dump()
             )
 
-            # Get ground truth
-            gt = await client.get_ground_truth(
+            # Query codebase from ChromaDB
+            results = await client.query_codebase(
                 project_code="my-project",
-                ground_truth_id="gt_tool_auth_login"
+                query="authentication handler",
+                n_results=5
             )
         ```
 
@@ -354,28 +332,27 @@ class MCPProbeServiceClient:
             ServiceAPIError: If upload fails.
         """
         if not artifacts_path.exists():
-             raise FileNotFoundError(f"Artifacts file not found: {artifacts_path}")
+            raise FileNotFoundError(f"Artifacts file not found: {artifacts_path}")
 
-        # 1. Read into memory
         with open(artifacts_path, "rb") as f:
             file_content = f.read()
 
-        # 2. DEBUG: Calculate MD5 and Size
         md5_hash = hashlib.md5(file_content).hexdigest()
         size_bytes = len(file_content)
-        logger.debug(f"DEBUG CLIENT: Sending Artifacts. Size: {size_bytes} bytes, MD5: {md5_hash}")
+        logger.debug(
+            f"Sending artifacts. Size: {size_bytes} bytes, MD5: {md5_hash}"
+        )
 
-        # 3. Send
         files = {"file": ("artifacts.zip", file_content, "application/zip")}
         try:
             response = await self.client.post(
                 f"/api/projects/{project_code}/tests/{version}/artifacts",
                 files=files,
-                timeout=60.0 # Increase timeout just in case
+                timeout=60.0,
             )
             return await self._handle_response(response)
         except Exception as e:
-            logger.debug(f"DEBUG CLIENT: Upload failed: {e}")
+            logger.debug(f"Upload failed: {e}")
             raise
 
     async def get_scenario_set(self, project_code: str) -> Optional[dict[str, Any]]:
@@ -411,94 +388,117 @@ class MCPProbeServiceClient:
             ServiceAPIError: If project not found or other error.
         """
         try:
-            response = await self.client.delete(f"/api/projects/{project_code}/tests")
+            response = await self.client.delete(
+                f"/api/projects/{project_code}/tests"
+            )
             await self._handle_response(response)
         except httpx.ConnectError as e:
             raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
 
     # =========================================================================
-    # Ground Truth Retrieval
+    # ChromaDB Codebase Indexing and Querying
     # =========================================================================
 
-    async def get_ground_truth(
+    async def index_codebase(
         self,
         project_code: str,
-        ground_truth_id: str,
-    ) -> Optional[GroundTruthResponse]:
-        """Get a specific ground truth by ID.
-
-        Args:
-            project_code: The project code.
-            ground_truth_id: The ground truth ID (e.g., "gt_tool_auth_login").
-
-        Returns:
-            The ground truth data if found, None otherwise.
-
-        Raises:
-            ServiceConnectionError: If unable to connect.
-            ServiceAPIError: For non-404 errors.
-        """
-        try:
-            response = await self.client.get(
-                f"/api/projects/{project_code}/ground-truths/{ground_truth_id}"
-            )
-            if response.status_code == 404:
-                return None
-            data = await self._handle_response(response)
-            return GroundTruthResponse(**data)
-        except httpx.ConnectError as e:
-            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
-
-    async def get_workflow_ground_truth(
-        self,
-        project_code: str,
-        ground_truth_id: str,
-    ) -> Optional[WorkflowGroundTruthResponse]:
-        """Get a specific workflow ground truth by ID.
-
-        Args:
-            project_code: The project code.
-            ground_truth_id: The workflow ground truth ID.
-
-        Returns:
-            The workflow ground truth data if found, None otherwise.
-
-        Raises:
-            ServiceConnectionError: If unable to connect.
-            ServiceAPIError: For non-404 errors.
-        """
-        try:
-            response = await self.client.get(
-                f"/api/projects/{project_code}/ground-truths/{ground_truth_id}"
-            )
-            if response.status_code == 404:
-                return None
-            data = await self._handle_response(response)
-            return WorkflowGroundTruthResponse(**data)
-        except httpx.ConnectError as e:
-            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
-
-    async def list_ground_truths(
-        self,
-        project_code: str,
+        entities: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """List all ground truths for a project.
+        """Index code entities into ChromaDB via the service.
 
         Args:
             project_code: The project code.
+            entities: List of CodeEntity data as dictionaries.
 
         Returns:
-            Dictionary containing 'ground_truths' and 'workflow_ground_truths'.
+            Indexing result with counts.
 
         Raises:
             ServiceConnectionError: If unable to connect.
-            ServiceAPIError: If project or tests not found.
+            ServiceAPIError: If project not found or indexing fails.
         """
         try:
-            response = await self.client.get(
-                f"/api/projects/{project_code}/ground-truths"
+            response = await self.client.post(
+                f"/api/projects/{project_code}/codebase/index",
+                json={"entities": entities},
+                timeout=120.0,
             )
             return await self._handle_response(response)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def query_codebase(
+        self,
+        project_code: str,
+        query: str,
+        n_results: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Query the ChromaDB-indexed codebase for relevant code.
+
+        Args:
+            project_code: The project code.
+            query: Semantic search query string.
+            n_results: Number of results to return.
+
+        Returns:
+            List of matching code entity data.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: If project not found or query fails.
+        """
+        try:
+            response = await self.client.post(
+                f"/api/projects/{project_code}/codebase/query",
+                json={"query": query, "n_results": n_results},
+            )
+            data = await self._handle_response(response)
+            return data.get("results", [])
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def get_codebase_status(
+        self,
+        project_code: str,
+    ) -> Optional[dict[str, Any]]:
+        """Get the indexing status of the codebase for a project.
+
+        Args:
+            project_code: The project code.
+
+        Returns:
+            Status data including entity count, last indexed timestamp, etc.
+            None if no codebase has been indexed.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: For non-404 errors.
+        """
+        try:
+            response = await self.client.get(
+                f"/api/projects/{project_code}/codebase/status"
+            )
+            if response.status_code == 404:
+                return None
+            return await self._handle_response(response)
+        except httpx.ConnectError as e:
+            raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
+
+    async def clear_codebase(self, project_code: str) -> None:
+        """Clear the indexed codebase for a project.
+
+        Args:
+            project_code: The project code.
+
+        Raises:
+            ServiceConnectionError: If unable to connect.
+            ServiceAPIError: If project not found or other error.
+        """
+        try:
+            response = await self.client.delete(
+                f"/api/projects/{project_code}/codebase"
+            )
+            await self._handle_response(response)
         except httpx.ConnectError as e:
             raise ServiceConnectionError(f"Unable to connect to service: {e}") from e
 

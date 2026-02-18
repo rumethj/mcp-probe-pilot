@@ -1,1310 +1,226 @@
-"""LLM prompt templates for test generation.
+"""LLM prompt templates for Gherkin test generation.
 
-This module provides separate prompt templates for:
-1. Ground truth generation (isolated context - no scenario information)
-2. Scenario generation (references ground truth by ID only)
-3. Workflow analysis and generation (multi-step chained scenarios)
-4. Step definition generation (executable Python Behave steps)
+This module provides prompt templates used by the unit and integration
+test generators to produce BDD Gherkin feature files from MCP discovery
+results and codebase context.
 
-The separation prevents ground truth poisoning by ensuring ground truth
-is derived purely from capability definitions.
+All templates use Python string.Template syntax (${variable}) for
+substitution to avoid conflicts with JSON braces in examples.
 """
 
-import json
-from typing import Any
-
-from ..discovery.models import DiscoveryResult, PromptInfo, ResourceInfo, ToolInfo
-from .models import FeatureFile, ScenarioSet, TargetType, WorkflowScenario
-
 # =============================================================================
-# GROUND TRUTH GENERATION PROMPTS (Phase 1 - Isolated Context)
+# System Prompts
 # =============================================================================
 
-GROUND_TRUTH_SYSTEM_PROMPT = """You are an expert MCP (Model Context Protocol) test engineer.
-Your task is to analyze MCP capability definitions and generate ground truth specifications
-that describe the EXPECTED behavior of the capability.
-
-IMPORTANT:
-- Base your analysis ONLY on the capability definition (name, description, schema)
-- Do NOT generate test scenarios - only describe what the capability SHOULD do
-- Be precise and comprehensive about expected behavior
-- Include both success and error conditions
-
-Output must be valid JSON matching the specified schema."""
-
-
-def build_tool_ground_truth_prompt(tool: ToolInfo) -> str:
-    """Build a prompt for generating tool ground truth.
-
-    Args:
-        tool: The tool information from discovery.
-
-    Returns:
-        Prompt string for ground truth generation.
-    """
-    schema_str = json.dumps(tool.input_schema, indent=2) if tool.input_schema else "{}"
-
-    return f'''Analyze this MCP tool definition and generate ground truth specification.
-
-TOOL DEFINITION:
-- Name: {tool.name}
-- Description: {tool.description or "No description provided"}
-- Input Schema:
-```json
-{schema_str}
-```
-
-Generate a JSON object with the following structure:
-{{
-    "expected_behavior": "<detailed description of what this tool should do when called correctly>",
-    "expected_output_schema": {{
-        "type": "object",
-        "properties": {{
-            // Expected response fields based on the tool's purpose
-        }}
-    }},
-    "valid_input_examples": [
-        {{
-            "input": {{}},  // Valid input arguments
-            "expected_outcome": "<what should happen>"
-        }}
-    ],
-    "invalid_input_examples": [
-        {{
-            "input": {{}},  // Invalid input arguments
-            "expected_error": "<expected error behavior>"
-        }}
-    ],
-    "semantic_reference": "<concise description for semantic validation>"
-}}
-
-Analyze the tool carefully and provide comprehensive ground truth.'''
-
-
-def build_resource_ground_truth_prompt(resource: ResourceInfo) -> str:
-    """Build a prompt for generating resource ground truth.
-
-    Args:
-        resource: The resource information from discovery.
-
-    Returns:
-        Prompt string for ground truth generation.
-    """
-    template_info = " (URI Template - contains placeholders)" if resource.is_template else ""
-
-    return f'''Analyze this MCP resource definition and generate ground truth specification.
-
-RESOURCE DEFINITION:
-- URI: {resource.uri}{template_info}
-- Name: {resource.name or "No name provided"}
-- Description: {resource.description or "No description provided"}
-- MIME Type: {resource.mime_type or "Not specified"}
-
-Generate a JSON object with the following structure:
-{{
-    "expected_behavior": "<detailed description of what this resource should return>",
-    "expected_output_schema": {{
-        "type": "object",
-        "properties": {{
-            // Expected content structure based on MIME type and description
-        }}
-    }},
-    "valid_input_examples": [
-        {{
-            "uri": "<valid URI or URI with valid placeholders filled>",
-            "expected_outcome": "<what content should be returned>"
-        }}
-    ],
-    "invalid_input_examples": [
-        {{
-            "uri": "<invalid URI or URI with invalid placeholders>",
-            "expected_error": "<expected error behavior>"
-        }}
-    ],
-    "semantic_reference": "<concise description for semantic validation>"
-}}
-
-Analyze the resource carefully and provide comprehensive ground truth.'''
-
-
-def build_prompt_ground_truth_prompt(prompt: PromptInfo) -> str:
-    """Build a prompt for generating prompt ground truth.
-
-    Args:
-        prompt: The prompt information from discovery.
-
-    Returns:
-        Prompt string for ground truth generation.
-    """
-    args_str = ""
-    if prompt.arguments:
-        args_list = []
-        for arg in prompt.arguments:
-            required = "required" if arg.required else "optional"
-            args_list.append(f"  - {arg.name} ({required}): {arg.description or 'No description'}")
-        args_str = "\n".join(args_list)
-    else:
-        args_str = "  No arguments"
-
-    return f'''Analyze this MCP prompt definition and generate ground truth specification.
-
-PROMPT DEFINITION:
-- Name: {prompt.name}
-- Description: {prompt.description or "No description provided"}
-- Arguments:
-{args_str}
-
-Generate a JSON object with the following structure:
-{{
-    "expected_behavior": "<detailed description of what this prompt should return>",
-    "expected_output_schema": {{
-        "type": "object",
-        "properties": {{
-            // Expected prompt message structure
-        }}
-    }},
-    "valid_input_examples": [
-        {{
-            "arguments": {{}},  // Valid argument values
-            "expected_outcome": "<what messages should be returned>"
-        }}
-    ],
-    "invalid_input_examples": [
-        {{
-            "arguments": {{}},  // Invalid/missing argument values
-            "expected_error": "<expected error behavior>"
-        }}
-    ],
-    "semantic_reference": "<concise description for semantic validation>"
-}}
-
-Analyze the prompt carefully and provide comprehensive ground truth.'''
-
-
-# =============================================================================
-# SCENARIO GENERATION PROMPTS (Phase 2 - References Ground Truth)
-# =============================================================================
-
-SCENARIO_SYSTEM_PROMPT = """You are an expert BDD (Behavior-Driven Development) test engineer.
-Your task is to generate Gherkin test scenarios for MCP (Model Context Protocol) capabilities.
-
-IMPORTANT:
-- Generate scenarios that reference the provided ground truth ID
-- Include happy path, error case, and edge case scenarios
-- Use the standard Gherkin format (Given/When/Then)
-- Scenarios should be executable and deterministic
-
-Output must be valid JSON matching the specified schema."""
-
-
-def build_tool_scenario_prompt(
-    tool: ToolInfo,
-    ground_truth_id: str,
-) -> str:
-    """Build a prompt for generating tool test scenarios.
-
-    Args:
-        tool: The tool information from discovery.
-        ground_truth_id: The ID of the pre-generated ground truth.
-
-    Returns:
-        Prompt string for scenario generation.
-    """
-    schema_str = json.dumps(tool.input_schema, indent=2) if tool.input_schema else "{}"
-
-    return f'''Generate Gherkin BDD test scenarios for this MCP tool.
-
-TOOL DEFINITION:
-- Name: {tool.name}
-- Description: {tool.description or "No description provided"}
-- Input Schema:
-```json
-{schema_str}
-```
-
-GROUND TRUTH REFERENCE: {ground_truth_id}
-
-Generate a JSON object with test scenarios:
-{{
-    "scenarios": [
-        {{
-            "name": "<descriptive scenario name>",
-            "category": "happy_path|error_case|edge_case",
-            "description": "<what this scenario tests>",
-            "gherkin": "<complete Gherkin scenario text>"
-        }}
-    ]
-}}
-
-GHERKIN FORMAT:
-- Use: Given the MCP server is running
-- Use: When I call tool "{tool.name}" with arguments {{...}}
-- Use: Then the response should be successful / indicate failure
-- Use: And the response should match ground truth "{ground_truth_id}"
-
-Generate at least:
-- 1-2 happy path scenarios (valid inputs)
-- 2-3 error case scenarios (invalid inputs, missing required fields)
-- 1-2 edge case scenarios (boundary values, optional parameters)'''
-
-
-def build_resource_scenario_prompt(
-    resource: ResourceInfo,
-    ground_truth_id: str,
-) -> str:
-    """Build a prompt for generating resource test scenarios.
-
-    Args:
-        resource: The resource information from discovery.
-        ground_truth_id: The ID of the pre-generated ground truth.
-
-    Returns:
-        Prompt string for scenario generation.
-    """
-    template_note = ""
-    if resource.is_template:
-        template_note = "\nNote: This is a URI template. Generate scenarios with various placeholder values."
-
-    return f'''Generate Gherkin BDD test scenarios for this MCP resource.
-
-RESOURCE DEFINITION:
-- URI: {resource.uri}
-- Name: {resource.name or "No name provided"}
-- Description: {resource.description or "No description provided"}
-- MIME Type: {resource.mime_type or "Not specified"}{template_note}
-
-GROUND TRUTH REFERENCE: {ground_truth_id}
-
-Generate a JSON object with test scenarios:
-{{
-    "scenarios": [
-        {{
-            "name": "<descriptive scenario name>",
-            "category": "happy_path|error_case|edge_case",
-            "description": "<what this scenario tests>",
-            "gherkin": "<complete Gherkin scenario text>"
-        }}
-    ]
-}}
-
-GHERKIN FORMAT:
-- Use: Given the MCP server is running
-- Use: When I read resource "{resource.uri}"
-- Use: Then the response should contain valid content
-- Use: And the response should match ground truth "{ground_truth_id}"
-
-Generate at least:
-- 1 happy path scenario (valid resource access)
-- 1-2 error case scenarios (invalid URI, missing resource)
-- 1 edge case scenario (if applicable for templates)'''
-
-
-def build_prompt_scenario_prompt(
-    prompt: PromptInfo,
-    ground_truth_id: str,
-) -> str:
-    """Build a prompt for generating prompt test scenarios.
-
-    Args:
-        prompt: The prompt information from discovery.
-        ground_truth_id: The ID of the pre-generated ground truth.
-
-    Returns:
-        Prompt string for scenario generation.
-    """
-    args_str = ""
-    if prompt.arguments:
-        args_list = []
-        for arg in prompt.arguments:
-            required = "required" if arg.required else "optional"
-            args_list.append(f"  - {arg.name} ({required}): {arg.description or 'No description'}")
-        args_str = "\n".join(args_list)
-    else:
-        args_str = "  No arguments"
-
-    return f'''Generate Gherkin BDD test scenarios for this MCP prompt.
-
-PROMPT DEFINITION:
-- Name: {prompt.name}
-- Description: {prompt.description or "No description provided"}
-- Arguments:
-{args_str}
-
-GROUND TRUTH REFERENCE: {ground_truth_id}
-
-Generate a JSON object with test scenarios:
-{{
-    "scenarios": [
-        {{
-            "name": "<descriptive scenario name>",
-            "category": "happy_path|error_case|edge_case",
-            "description": "<what this scenario tests>",
-            "gherkin": "<complete Gherkin scenario text>"
-        }}
-    ]
-}}
-
-GHERKIN FORMAT:
-- Use: Given the MCP server is running
-- Use: When I get prompt "{prompt.name}" with arguments {{...}}
-- Use: Then the response should contain prompt messages
-- Use: And the response should match ground truth "{ground_truth_id}"
-
-Generate at least:
-- 1-2 happy path scenarios (valid arguments)
-- 1-2 error case scenarios (missing required arguments, invalid values)
-- 1 edge case scenario (optional arguments, boundary values)'''
-
-
-# =============================================================================
-# PROMPT BUILDERS - Unified interface
-# =============================================================================
-
-
-def build_ground_truth_prompt(
-    target_type: TargetType,
-    target: ToolInfo | ResourceInfo | PromptInfo,
-) -> str:
-    """Build a ground truth generation prompt for any target type.
-
-    Args:
-        target_type: The type of capability.
-        target: The capability information from discovery.
-
-    Returns:
-        Prompt string for ground truth generation.
-
-    Raises:
-        ValueError: If target type doesn't match target object.
-    """
-    if target_type == TargetType.TOOL:
-        if not isinstance(target, ToolInfo):
-            raise ValueError("Target must be ToolInfo for TOOL type")
-        return build_tool_ground_truth_prompt(target)
-    elif target_type == TargetType.RESOURCE:
-        if not isinstance(target, ResourceInfo):
-            raise ValueError("Target must be ResourceInfo for RESOURCE type")
-        return build_resource_ground_truth_prompt(target)
-    elif target_type == TargetType.PROMPT:
-        if not isinstance(target, PromptInfo):
-            raise ValueError("Target must be PromptInfo for PROMPT type")
-        return build_prompt_ground_truth_prompt(target)
-    else:
-        raise ValueError(f"Unknown target type: {target_type}")
-
-
-def build_scenario_prompt(
-    target_type: TargetType,
-    target: ToolInfo | ResourceInfo | PromptInfo,
-    ground_truth_id: str,
-) -> str:
-    """Build a scenario generation prompt for any target type.
-
-    Args:
-        target_type: The type of capability.
-        target: The capability information from discovery.
-        ground_truth_id: The ID of the pre-generated ground truth.
-
-    Returns:
-        Prompt string for scenario generation.
-
-    Raises:
-        ValueError: If target type doesn't match target object.
-    """
-    if target_type == TargetType.TOOL:
-        if not isinstance(target, ToolInfo):
-            raise ValueError("Target must be ToolInfo for TOOL type")
-        return build_tool_scenario_prompt(target, ground_truth_id)
-    elif target_type == TargetType.RESOURCE:
-        if not isinstance(target, ResourceInfo):
-            raise ValueError("Target must be ResourceInfo for RESOURCE type")
-        return build_resource_scenario_prompt(target, ground_truth_id)
-    elif target_type == TargetType.PROMPT:
-        if not isinstance(target, PromptInfo):
-            raise ValueError("Target must be PromptInfo for PROMPT type")
-        return build_prompt_scenario_prompt(target, ground_truth_id)
-    else:
-        raise ValueError(f"Unknown target type: {target_type}")
-
-
-# =============================================================================
-# WORKFLOW PROMPTS - Multi-step chained scenarios
-# =============================================================================
-
-WORKFLOW_ANALYSIS_SYSTEM_PROMPT = """You are an expert MCP (Model Context Protocol) test engineer.
-Your task is to analyze MCP server capabilities and identify meaningful workflows
-where multiple features must be chained together to achieve a goal.
-
-Look for patterns such as:
-- Authentication followed by authenticated operations
-- Creating entities then performing operations on them
-- Reading resources to get IDs for tool calls
-- Operations that trigger sampling or elicitation
-- Data dependencies between tools
-
-Output must be valid JSON matching the specified schema."""
-
-
-WORKFLOW_GROUND_TRUTH_SYSTEM_PROMPT = """You are an expert MCP (Model Context Protocol) test engineer.
-Your task is to generate ground truth specifications for workflow scenarios.
-
-IMPORTANT:
-- Base your analysis ONLY on the workflow definition and involved capabilities
-- Describe the expected behavior at each step and the final outcome
-- Include expected error handling when intermediate steps fail
-- Do NOT generate test scenarios - only describe what SHOULD happen
-
-Output must be valid JSON matching the specified schema."""
-
-
-WORKFLOW_SCENARIO_SYSTEM_PROMPT = """You are an expert BDD (Behavior-Driven Development) test engineer.
-Your task is to generate Gherkin test scenarios for MCP workflow tests that chain
-multiple features (tools, resources, prompts, sampling, elicitation).
-
-IMPORTANT:
-- Generate multi-step scenarios that test the complete workflow
-- Include data passing between steps using variables
-- Reference the provided ground truth ID
-- Include both successful flow and error handling scenarios
-
-Output must be valid JSON matching the specified schema."""
-
-
-def build_workflow_analysis_prompt(discovery: DiscoveryResult) -> str:
-    """Build a prompt for analyzing capabilities to identify workflows.
-
-    Args:
-        discovery: The complete discovery result from the server.
-
-    Returns:
-        Prompt string for workflow analysis.
-    """
-    # Summarize tools
-    tools_summary = []
-    for tool in discovery.tools:
-        params = []
-        if tool.input_schema and "properties" in tool.input_schema:
-            for param, schema in tool.input_schema["properties"].items():
-                params.append(f"{param}: {schema.get('type', 'any')}")
-        params_str = ", ".join(params) if params else "none"
-        tools_summary.append(
-            f"  - {tool.name}({params_str}): {tool.description or 'No description'}"
-        )
-    tools_str = "\n".join(tools_summary) if tools_summary else "  No tools"
-
-    # Summarize resources
-    resources_summary = []
-    for resource in discovery.resources:
-        template_marker = " [TEMPLATE]" if resource.is_template else ""
-        resources_summary.append(
-            f"  - {resource.uri}{template_marker}: {resource.description or 'No description'}"
-        )
-    resources_str = "\n".join(resources_summary) if resources_summary else "  No resources"
-
-    # Summarize prompts
-    prompts_summary = []
-    for prompt in discovery.prompts:
-        args = [a.name for a in prompt.arguments] if prompt.arguments else []
-        args_str = f"({', '.join(args)})" if args else "()"
-        prompts_summary.append(
-            f"  - {prompt.name}{args_str}: {prompt.description or 'No description'}"
-        )
-    prompts_str = "\n".join(prompts_summary) if prompts_summary else "  No prompts"
-
-    # Check for sampling/elicitation support
-    caps = discovery.server_info.capabilities
-    special_features = []
-    if caps.sampling:
-        special_features.append("- Server supports SAMPLING (can request LLM completions)")
-    if hasattr(caps, "elicitation") and caps.elicitation:
-        special_features.append("- Server supports ELICITATION (can request user input)")
-    special_str = "\n".join(special_features) if special_features else "- No special features"
-
-    return f'''Analyze these MCP server capabilities and identify meaningful WORKFLOWS
-where multiple features must be chained together.
-
-SERVER: {discovery.server_info.name}
-
-TOOLS:
-{tools_str}
-
-RESOURCES:
-{resources_str}
-
-PROMPTS:
-{prompts_str}
-
-SPECIAL CAPABILITIES:
-{special_str}
-
-Identify workflows by looking for:
-1. Authentication patterns (login -> use token for subsequent calls)
-2. Create-then-use patterns (create entity -> perform operations on it)
-3. Read-then-act patterns (read resource -> use data in tool call)
-4. Multi-step business processes
-5. Operations involving sampling or elicitation
-
-Generate a JSON object with identified workflows:
-{{
-    "workflows": [
-        {{
-            "name": "<workflow name>",
-            "description": "<what this workflow accomplishes>",
-            "steps": [
-                {{
-                    "step_number": 1,
-                    "action_type": "tool_call|resource_read|prompt_get|sampling|elicitation",
-                    "target_name": "<name of tool/resource/prompt>",
-                    "description": "<what this step does>",
-                    "input_source": "literal|previous_step|context",
-                    "output_variable": "<variable name for result>",
-                    "dependencies": []
-                }}
-            ],
-            "involved_features": ["tools", "resources", "prompts", "sampling", "elicitation"]
-        }}
-    ]
-}}
-
-Identify 2-5 meaningful workflows that represent realistic usage patterns.'''
-
-
-def build_workflow_ground_truth_prompt(
-    workflow_name: str,
-    workflow_description: str,
-    steps: list[dict[str, Any]],
-    involved_features: list[str],
-) -> str:
-    """Build a prompt for generating workflow ground truth.
-
-    Args:
-        workflow_name: Name of the workflow.
-        workflow_description: Description of what the workflow does.
-        steps: List of workflow steps.
-        involved_features: List of feature types involved.
-
-    Returns:
-        Prompt string for workflow ground truth generation.
-    """
-    steps_str = json.dumps(steps, indent=2)
-    features_str = ", ".join(involved_features)
-
-    return f'''Generate ground truth specification for this MCP workflow.
-
-WORKFLOW: {workflow_name}
-DESCRIPTION: {workflow_description}
-INVOLVED FEATURES: {features_str}
-
-STEPS:
-{steps_str}
-
-Generate a JSON object with ground truth:
-{{
-    "expected_flow": "<description of expected execution flow>",
-    "step_expectations": [
-        {{
-            "step_number": 1,
-            "expected_behavior": "<what should happen>",
-            "expected_output": "<expected output structure or value>",
-            "success_criteria": "<how to verify success>"
-        }}
-    ],
-    "final_outcome": "<expected final result of complete workflow>",
-    "error_scenarios": [
-        {{
-            "failing_step": 1,
-            "error_type": "<type of error>",
-            "expected_behavior": "<how workflow should handle this>"
-        }}
-    ]
-}}
-
-Provide comprehensive ground truth for validating this workflow.'''
-
-
-def build_workflow_scenario_prompt(
-    workflow_name: str,
-    workflow_description: str,
-    steps: list[dict[str, Any]],
-    ground_truth_id: str,
-    involved_features: list[str],
-) -> str:
-    """Build a prompt for generating workflow test scenarios.
-
-    Args:
-        workflow_name: Name of the workflow.
-        workflow_description: Description of what the workflow does.
-        steps: List of workflow steps.
-        ground_truth_id: ID of the pre-generated workflow ground truth.
-        involved_features: List of feature types involved.
-
-    Returns:
-        Prompt string for workflow scenario generation.
-    """
-    steps_str = json.dumps(steps, indent=2)
-    features_str = ", ".join(involved_features)
-
-    return f'''Generate Gherkin BDD test scenarios for this MCP workflow.
-
-WORKFLOW: {workflow_name}
-DESCRIPTION: {workflow_description}
-INVOLVED FEATURES: {features_str}
-GROUND TRUTH REFERENCE: {ground_truth_id}
-
-STEPS:
-{steps_str}
-
-Generate a JSON object with test scenarios:
-{{
-    "scenarios": [
-        {{
-            "name": "<descriptive scenario name>",
-            "description": "<what this scenario tests>",
-            "gherkin": "<complete Gherkin scenario text>"
-        }}
-    ]
-}}
-
-GHERKIN FORMAT FOR WORKFLOWS:
-- Use: Given the MCP server is running
-- For tool calls: When I call tool "<name>" with arguments {{...}}
-- For resources: When I read resource "<uri>"
-- For prompts: When I get prompt "<name>" with arguments {{...}}
-- For data passing: And I store the result as "<variable>"
-- For using stored data: When I call tool "<name>" with arguments using "<variable>"
-- Use: Then the workflow should complete successfully
-- Use: And the result should match ground truth "{ground_truth_id}"
-
-Generate at least:
-- 1 happy path scenario (complete workflow succeeds)
-- 1-2 error scenarios (intermediate step fails, workflow handles gracefully)
-- 1 edge case if applicable (optional steps, alternative paths)
-
-Example workflow scenario:
-```gherkin
-Scenario: Complete authentication and project creation workflow
-  Given the MCP server is running
-  When I call tool "auth_login" with arguments {{"username": "admin", "password": "secret"}}
-  And I store the "token" from the result as "auth_token"
-  When I call tool "create_project" with arguments {{"token": "{{auth_token}}", "name": "Test Project"}}
-  And I store the "project_id" from the result as "new_project_id"
-  When I call tool "add_task" with arguments {{"token": "{{auth_token}}", "project_id": "{{new_project_id}}", "title": "First Task"}}
-  Then the workflow should complete successfully
-  And all steps should match ground truth "{ground_truth_id}"
-```'''
-
-
-# =============================================================================
-# STEP DEFINITION GENERATION PROMPTS
-# =============================================================================
-
-STEP_DEFINITION_SYSTEM_PROMPT = """You are an expert Python developer and BDD test engineer.
-Your task is to generate Python Behave step definitions that implement Gherkin test scenarios
-for MCP (Model Context Protocol) server testing.
-
-IMPORTANT:
-- Generate complete, executable Python code
-- Use the MCP Python SDK for server communication
-- Access ground truths via the GroundTruthClient provided in behave context
-- Include proper error handling and assertions
-- Use async/await patterns for MCP operations
-- Follow Python best practices and PEP 8 style
-
-The step definitions will have access to:
-- context.mcp_client: MCP client for server communication
-- context.ground_truth_client: Client to fetch ground truths from mcp-probe-service
-- context.project_code: The project code for ground truth lookups
-- context.stored_values: Dictionary for storing values between steps
-
-Output must be valid Python code."""
-
-
-def build_step_definition_prompt(
-    feature: FeatureFile,
-    ground_truth: dict[str, Any],
-) -> str:
-    """Build a prompt for generating step definitions for a feature.
-
-    Args:
-        feature: The feature file containing scenarios.
-        ground_truth: The ground truth specification for this feature.
-
-    Returns:
-        Prompt string for step definition generation.
-    """
-    scenarios_text = "\n\n".join(
-        f"Scenario: {s.name}\n{s.gherkin}" for s in feature.scenarios
-    )
-
-    return f'''Generate Python Behave step definitions for this MCP feature.
-
-FEATURE: {feature.name}
-TARGET TYPE: {feature.target_type.value}
-TARGET NAME: {feature.target_name}
-GROUND TRUTH ID: {feature.ground_truth_id}
-
-GHERKIN SCENARIOS:
-{feature.gherkin}
-
-GROUND TRUTH SPECIFICATION:
-```json
-{json.dumps(ground_truth, indent=2)}
-```
-
-Generate Python step definitions that:
-1. Implement each Given/When/Then step from the scenarios
-2. Use MCP SDK to call tools, read resources, or get prompts
-3. Fetch ground truth from context.ground_truth_client when needed
-4. Store intermediate values in context.stored_values for chained steps
-5. Include proper assertions based on ground truth expectations
-
-REQUIRED IMPORTS (already available):
-```python
-import json
-import re
-from behave import given, when, then
-from behave.runner import Context
-```
-
-AVAILABLE IN CONTEXT:
-- context.mcp_client: MCP client (async) with methods:
-  - await context.mcp_client.call_tool(name, arguments)
-  - await context.mcp_client.read_resource(uri)
-  - await context.mcp_client.get_prompt(name, arguments)
-- context.ground_truth_client: GroundTruthClient with methods:
-  - await context.ground_truth_client.get(ground_truth_id) -> dict
-- context.project_code: str
-- context.stored_values: dict[str, Any]
-- context.last_response: The most recent MCP response
-- context.last_error: The most recent error (if any)
-
-STEP PATTERNS TO IMPLEMENT:
-- @given('the MCP server is running')
-- @when('I call tool "{{tool_name}}" with arguments {{args}}')
-- @when('I read resource "{{uri}}"')
-- @when('I get prompt "{{prompt_name}}" with arguments {{args}}')
-- @then('the response should be successful')
-- @then('the response should indicate failure')
-- @then('the response should match ground truth "{{gt_id}}"')
-- @then('the response should contain {{field_path}}')
-- @when('I store the "{{field}}" from the result as "{{var_name}}"')
-
-Generate the complete step definitions file as valid Python code.
-Use asyncio.run() to run async operations in step definitions.
-Include docstrings for each step function.'''
-
-
-def build_workflow_step_definition_prompt(
-    workflow: WorkflowScenario,
-    ground_truth: dict[str, Any],
-) -> str:
-    """Build a prompt for generating step definitions for a workflow.
-
-    Args:
-        workflow: The workflow scenario.
-        ground_truth: The workflow ground truth specification.
-
-    Returns:
-        Prompt string for workflow step definition generation.
-    """
-    steps_info = "\n".join(
-        f"  Step {s.step_number}: {s.action_type} - {s.target_name} ({s.description})"
-        for s in workflow.steps
-    )
-
-    return f'''Generate Python Behave step definitions for this MCP workflow scenario.
-
-WORKFLOW: {workflow.name}
-DESCRIPTION: {workflow.description}
-GROUND TRUTH ID: {workflow.ground_truth_id}
-INVOLVED FEATURES: {', '.join(workflow.involved_features)}
-
-WORKFLOW STEPS:
-{steps_info}
-
-GHERKIN:
-{workflow.gherkin}
-
-WORKFLOW GROUND TRUTH:
-```json
-{json.dumps(ground_truth, indent=2)}
-```
-
-Generate Python step definitions that:
-1. Chain multiple MCP operations together
-2. Pass data between steps using context.stored_values
-3. Handle workflow-specific assertions
-4. Implement proper error handling for intermediate steps
-5. Verify the complete workflow against ground truth
-
-ADDITIONAL STEP PATTERNS FOR WORKFLOWS:
-- @when('I store the "{{field}}" from the result as "{{var_name}}"')
-- @when('I call tool "{{name}}" with arguments using "{{var_name}}"')
-- @then('the workflow should complete successfully')
-- @then('the workflow should fail at step {{step_num}}')
-- @then('all steps should match ground truth "{{gt_id}}"')
-
-Generate the complete step definitions file as valid Python code.'''
-
-
-def build_combined_step_definition_prompt(
-    scenario_set: ScenarioSet,
-) -> str:
-    """Build a prompt for generating a combined step definitions file.
-
-    This generates a single file with all step definitions for all features
-    and workflows in the scenario set.
-
-    Args:
-        scenario_set: The complete scenario set.
-
-    Returns:
-        Prompt string for combined step definition generation.
-    """
-    # Summarize features
-    features_summary = []
-    for feature in scenario_set.features:
-        scenarios_count = len(feature.scenarios)
-        features_summary.append(
-            f"- {feature.name} ({feature.target_type.value}): {scenarios_count} scenarios"
-        )
-    features_str = "\n".join(features_summary) if features_summary else "  No features"
-
-    # Summarize workflows
-    workflows_summary = []
-    for workflow in scenario_set.workflow_scenarios:
-        steps_count = len(workflow.steps)
-        workflows_summary.append(f"- {workflow.name}: {steps_count} steps")
-    workflows_str = (
-        "\n".join(workflows_summary) if workflows_summary else "  No workflows"
-    )
-
-    # Collect all unique Gherkin step patterns
-    all_gherkin = []
-    for feature in scenario_set.features:
-        all_gherkin.append(feature.gherkin)
-    for workflow in scenario_set.workflow_scenarios:
-        all_gherkin.append(workflow.gherkin)
-
-    gherkin_text = "\n\n---\n\n".join(all_gherkin[:5])  # Limit to first 5 for brevity
-    if len(all_gherkin) > 5:
-        gherkin_text += f"\n\n... and {len(all_gherkin) - 5} more features/workflows"
-
-    # Summarize ground truths
-    gt_ids = list(scenario_set.ground_truths.keys())[:10]
-    gt_str = "\n".join(f"- {gt_id}" for gt_id in gt_ids)
-    if len(scenario_set.ground_truths) > 10:
-        gt_str += f"\n... and {len(scenario_set.ground_truths) - 10} more"
-
-    return f'''Generate a comprehensive Python Behave step definitions file for MCP server testing.
-
-SCENARIO SET SUMMARY:
-Features: {len(scenario_set.features)}
-Workflows: {len(scenario_set.workflow_scenarios)}
-Ground Truths: {len(scenario_set.ground_truths)}
-Workflow Ground Truths: {len(scenario_set.workflow_ground_truths)}
-
-FEATURES:
-{features_str}
-
-WORKFLOWS:
-{workflows_str}
-
-GROUND TRUTH IDs:
-{gt_str}
-
-SAMPLE GHERKIN (showing first 5):
-{gherkin_text}
-
-Generate a SINGLE comprehensive Python file with ALL step definitions needed to execute
-these scenarios. The file should include:
-
-1. All necessary imports
-2. Helper functions for common operations
-3. Step definitions for all Gherkin patterns used in the scenarios
-4. Proper async handling for MCP operations
-5. Ground truth validation logic
-
-REQUIRED FILE STRUCTURE:
-```python
-\"\"\"Step definitions for MCP server BDD tests.
-
-Auto-generated by mcp-probe-pilot TestImplementor.
-\"\"\"
-
-import asyncio
-import json
-import re
-from typing import Any
-
-from behave import given, when, then
-from behave.runner import Context
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
-
-def run_async(coro):
-    \"\"\"Run an async coroutine synchronously.\"\"\"
-    return asyncio.get_event_loop().run_until_complete(coro)
-
-
-async def fetch_ground_truth(context: Context, gt_id: str) -> dict[str, Any]:
-    \"\"\"Fetch ground truth from the service.\"\"\"
-    return await context.ground_truth_client.get(gt_id)
-
-
-# =============================================================================
-# Given Steps
-# =============================================================================
-
-@given('the MCP server is running')
-def step_server_running(context: Context):
-    ...
-
-# =============================================================================
-# When Steps - Tool Operations
-# =============================================================================
-
-@when('I call tool "{{tool_name}}" with arguments {{args}}')
-def step_call_tool(context: Context, tool_name: str, args: str):
-    ...
-
-# =============================================================================
-# When Steps - Resource Operations
-# =============================================================================
-
-@when('I read resource "{{uri}}"')
-def step_read_resource(context: Context, uri: str):
-    ...
-
-# =============================================================================
-# When Steps - Prompt Operations
-# =============================================================================
-
-@when('I get prompt "{{prompt_name}}" with arguments {{args}}')
-def step_get_prompt(context: Context, prompt_name: str, args: str):
-    ...
-
-# =============================================================================
-# When Steps - Data Handling
-# =============================================================================
-
-@when('I store the "{{field}}" from the result as "{{var_name}}"')
-def step_store_value(context: Context, field: str, var_name: str):
-    ...
-
-# =============================================================================
-# Then Steps - Assertions
-# =============================================================================
-
-@then('the response should be successful')
-def step_response_successful(context: Context):
-    ...
-
-@then('the response should match ground truth "{{gt_id}}"')
-def step_match_ground_truth(context: Context, gt_id: str):
-    ...
-
-# ... more step definitions as needed
-```
-
-Generate the complete, production-ready step definitions file.
-Include comprehensive error handling and meaningful assertion messages.'''
-
-
-ENVIRONMENT_PY_TEMPLATE = '''"""Behave environment configuration for MCP server testing.
-
-Auto-generated by mcp-probe-pilot TestImplementor.
-This file sets up the test environment, including MCP client connection
-and ground truth service client.
+SYSTEM_PROMPT = """You are an expert BDD test engineer specializing in MCP (Model Context Protocol) \
+server testing. You generate Gherkin feature files that validate MCP server correctness, protocol \
+compliance, and functional behavior.
+
+Rules:
+- Output ONLY valid Gherkin syntax (Feature, Scenario, Given/When/Then/And).
+- Do NOT include any markdown formatting, code fences, or explanations.
+- Every scenario MUST start with: Given the MCP server is running
+- Use realistic but safe test data in examples.
+- Each scenario should test ONE specific behavior.
+- Include tags (@happy-path, @error-case, @edge-case) on each scenario.
+- For semantic assertions, use: Then the response should be semantically relevant to "<description>"
+- For error cases, test with missing, invalid, and boundary values.
 """
 
-import asyncio
-import logging
-import os
-import sys
-from pathlib import Path
+# =============================================================================
+# Unit Test Prompt Templates
+# =============================================================================
 
-# Add the test directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+UNIT_TEST_TOOL_PROMPT = """Generate a Gherkin feature file for testing the MCP tool "${tool_name}".
 
-from ground_truth_client import GroundTruthClient
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+## Tool Schema
+- Name: ${tool_name}
+- Description: ${tool_description}
+- Input Schema: ${input_schema}
 
-logger = logging.getLogger(__name__)
+## Relevant Source Code Context
+${code_context}
 
-# Configuration from environment or defaults
-SERVICE_URL = os.environ.get("MCP_PROBE_SERVICE_URL", "{service_url}")
-PROJECT_CODE = os.environ.get("MCP_PROBE_PROJECT_CODE", "{project_code}")
-SERVER_COMMAND = os.environ.get("MCP_SERVER_COMMAND", "{server_command}")
+## Requirements
+Generate scenarios that cover:
+1. **Happy Path** (@happy-path): Valid invocations with correct parameters that should succeed.
+2. **Error Cases** (@error-case): Invocations with missing required parameters, invalid types, \
+or out-of-range values that should return proper JSON-RPC errors.
+3. **Edge Cases** (@edge-case): Boundary values, empty strings, very long inputs, special \
+characters, and null values.
 
+Use this format for tool calls:
+  When I call tool "${tool_name}" with arguments {<json_arguments>}
+  Then the response should be successful
+  And the response should contain a "<field>" field
 
-class MCPTestClient:
-    """Wrapper for MCP client operations in tests."""
+For error cases:
+  When I call tool "${tool_name}" with arguments {<invalid_json_arguments>}
+  Then the response should contain an error
 
-    def __init__(self):
-        self._session = None
-        self._read_stream = None
-        self._write_stream = None
-
-    async def connect(self, command: str):
-        """Connect to the MCP server.
-
-        Args:
-            command: The command to start the MCP server.
-        """
-        # Parse command into executable and args
-        parts = command.split()
-        server_params = StdioServerParameters(
-            command=parts[0],
-            args=parts[1:] if len(parts) > 1 else [],
-        )
-
-        self._read_stream, self._write_stream = await stdio_client(server_params).__aenter__()
-        self._session = ClientSession(self._read_stream, self._write_stream)
-        await self._session.__aenter__()
-        await self._session.initialize()
-
-    async def disconnect(self):
-        """Disconnect from the MCP server."""
-        if self._session:
-            await self._session.__aexit__(None, None, None)
-        self._session = None
-
-    async def call_tool(self, name: str, arguments: dict) -> dict:
-        """Call a tool on the MCP server.
-
-        Args:
-            name: Tool name.
-            arguments: Tool arguments.
-
-        Returns:
-            Tool response as a dictionary.
-        """
-        result = await self._session.call_tool(name, arguments)
-        return self._parse_result(result)
-
-    async def read_resource(self, uri: str) -> dict:
-        """Read a resource from the MCP server.
-
-        Args:
-            uri: Resource URI.
-
-        Returns:
-            Resource content as a dictionary.
-        """
-        result = await self._session.read_resource(uri)
-        return self._parse_result(result)
-
-    async def get_prompt(self, name: str, arguments: dict = None) -> dict:
-        """Get a prompt from the MCP server.
-
-        Args:
-            name: Prompt name.
-            arguments: Optional prompt arguments.
-
-        Returns:
-            Prompt messages as a dictionary.
-        """
-        result = await self._session.get_prompt(name, arguments or {{}})
-        return self._parse_result(result)
-
-    def _parse_result(self, result) -> dict:
-        """Parse MCP result into a dictionary."""
-        if hasattr(result, 'content'):
-            content = result.content
-            if isinstance(content, list) and len(content) > 0:
-                first = content[0]
-                if hasattr(first, 'text'):
-                    try:
-                        return {{"content": json.loads(first.text), "raw": first.text}}
-                    except json.JSONDecodeError:
-                        return {{"content": first.text, "raw": first.text}}
-            return {{"content": content}}
-        return {{"result": result}}
-
-
-def before_all(context):
-    """Set up before all tests run."""
-    context.project_code = PROJECT_CODE
-    context.service_url = SERVICE_URL
-    context.server_command = SERVER_COMMAND
-
-    # Initialize ground truth client
-    context.ground_truth_client = GroundTruthClient(SERVICE_URL, PROJECT_CODE)
-
-    # Initialize MCP client
-    context.mcp_client = MCPTestClient()
-
-    # Storage for values passed between steps
-    context.stored_values = {{}}
-
-    # Response tracking
-    context.last_response = None
-    context.last_error = None
-
-    logger.info(f"Test environment initialized for project: {{PROJECT_CODE}}")
-
-
-def before_scenario(context, scenario):
-    """Set up before each scenario."""
-    # Reset stored values for each scenario
-    context.stored_values = {{}}
-    context.last_response = None
-    context.last_error = None
-
-    logger.info(f"Starting scenario: {{scenario.name}}")
-
-
-def after_scenario(context, scenario):
-    """Clean up after each scenario."""
-    # Disconnect MCP client if connected
-    if context.mcp_client._session:
-        asyncio.get_event_loop().run_until_complete(
-            context.mcp_client.disconnect()
-        )
-
-    logger.info(f"Finished scenario: {{scenario.name}} - {{scenario.status}}")
-
-
-def after_all(context):
-    """Clean up after all tests complete."""
-    # Close ground truth client
-    if hasattr(context, 'ground_truth_client'):
-        asyncio.get_event_loop().run_until_complete(
-            context.ground_truth_client.close()
-        )
-
-    logger.info("Test environment cleaned up")
-
-
-# Import json for parsing
-import json
-'''
-
-
-GROUND_TRUTH_CLIENT_TEMPLATE = '''"""Ground truth client for fetching from mcp-probe-service.
-
-Auto-generated by mcp-probe-pilot TestImplementor.
-This client fetches ground truth specifications from the mcp-probe-service
-for use in test assertions.
+Generate at least 3 scenarios (1 happy path, 1 error case, 1 edge case).
 """
 
-import httpx
-from typing import Any, Optional
+UNIT_TEST_RESOURCE_PROMPT = """Generate a Gherkin feature file for testing the MCP resource \
+"${resource_name}".
 
+## Resource Schema
+- URI: ${resource_uri}
+- Name: ${resource_name}
+- Description: ${resource_description}
+- MIME Type: ${mime_type}
+- Is Template: ${is_template}
 
-class GroundTruthClientError(Exception):
-    """Error accessing ground truth service."""
-    pass
+## Relevant Source Code Context
+${code_context}
 
+## Requirements
+Generate scenarios that cover:
+1. **Happy Path** (@happy-path): Successfully reading the resource with valid URI.
+2. **Error Cases** (@error-case): Accessing with invalid URI, missing template parameters.
+3. **Edge Cases** (@edge-case): Special characters in URI parameters, boundary values for \
+template arguments.
 
-class GroundTruthClient:
-    """Client for fetching ground truths from mcp-probe-service.
+Use this format for resource access:
+  When I read resource "${resource_uri}"
+  Then the response should be successful
+  And the response content type should be "${mime_type}"
 
-    Example:
-        ```python
-        client = GroundTruthClient("http://localhost:8080", "my-project")
-        gt = await client.get("gt_tool_auth_login")
-        print(gt["expected_behavior"])
-        await client.close()
-        ```
-    """
+For template resources, include parameter substitution:
+  When I read resource "<uri_with_params>"
 
-    def __init__(self, service_url: str, project_code: str):
-        """Initialize the client.
+Generate at least 3 scenarios (1 happy path, 1 error case, 1 edge case).
+"""
 
-        Args:
-            service_url: Base URL of mcp-probe-service.
-            project_code: Project code for ground truth lookups.
-        """
-        self.service_url = service_url.rstrip("/")
-        self.project_code = project_code
-        self._client = httpx.AsyncClient(base_url=self.service_url, timeout=30.0)
-        self._cache: dict[str, dict[str, Any]] = {{}}
+UNIT_TEST_PROMPT_PROMPT = """Generate a Gherkin feature file for testing the MCP prompt \
+"${prompt_name}".
 
-    async def get(self, ground_truth_id: str) -> dict[str, Any]:
-        """Get a ground truth by ID.
+## Prompt Schema
+- Name: ${prompt_name}
+- Description: ${prompt_description}
+- Arguments: ${arguments}
 
-        Args:
-            ground_truth_id: The ground truth ID (e.g., "gt_tool_auth_login").
+## Relevant Source Code Context
+${code_context}
 
-        Returns:
-            The ground truth specification as a dictionary.
+## Requirements
+Generate scenarios that cover:
+1. **Happy Path** (@happy-path): Getting the prompt with all required arguments filled correctly.
+2. **Error Cases** (@error-case): Missing required arguments, invalid argument values.
+3. **Edge Cases** (@edge-case): Optional arguments omitted, empty string arguments, very long \
+argument values.
 
-        Raises:
-            GroundTruthClientError: If ground truth not found or service error.
-        """
-        # Check cache first
-        if ground_truth_id in self._cache:
-            return self._cache[ground_truth_id]
+Use this format for prompt retrieval:
+  When I get prompt "${prompt_name}" with arguments {<json_arguments>}
+  Then the response should be successful
+  And the response should contain prompt messages
 
-        try:
-            response = await self._client.get(
-                f"/api/projects/{{self.project_code}}/ground-truths/{{ground_truth_id}}"
-            )
+For error cases:
+  When I get prompt "${prompt_name}" with arguments {<invalid_arguments>}
+  Then the response should contain an error
 
-            if response.status_code == 404:
-                raise GroundTruthClientError(
-                    f"Ground truth '{{ground_truth_id}}' not found for project '{{self.project_code}}'"
-                )
+Generate at least 3 scenarios (1 happy path, 1 error case, 1 edge case).
+"""
 
-            if response.status_code >= 400:
-                raise GroundTruthClientError(
-                    f"Service error: {{response.status_code}} - {{response.text}}"
-                )
+# =============================================================================
+# Integration Test Prompt Templates
+# =============================================================================
 
-            gt = response.json()
-            self._cache[ground_truth_id] = gt
-            return gt
+WORKFLOW_IDENTIFICATION_PROMPT = """Analyze the following MCP server capabilities and source code \
+context to identify integration test workflow patterns.
 
-        except httpx.ConnectError as e:
-            raise GroundTruthClientError(
-                f"Unable to connect to mcp-probe-service at {{self.service_url}}: {{e}}"
-            ) from e
+## Discovered MCP Capabilities
 
-    async def get_all(self) -> dict[str, dict[str, Any]]:
-        """Get all ground truths for the project.
+### Tools
+${tools_summary}
 
-        Returns:
-            Dictionary with 'ground_truths' and 'workflow_ground_truths'.
+### Resources
+${resources_summary}
 
-        Raises:
-            GroundTruthClientError: On service error.
-        """
-        try:
-            response = await self._client.get(
-                f"/api/projects/{{self.project_code}}/ground-truths"
-            )
+### Prompts
+${prompts_summary}
 
-            if response.status_code >= 400:
-                raise GroundTruthClientError(
-                    f"Service error: {{response.status_code}} - {{response.text}}"
-                )
+## Source Code Context
+${code_context}
 
-            data = response.json()
+## Workflow Patterns to Identify
 
-            # Cache all ground truths
-            for gt_id, gt in data.get("ground_truths", {{}}).items():
-                self._cache[gt_id] = gt
-            for gt_id, gt in data.get("workflow_ground_truths", {{}}).items():
-                self._cache[gt_id] = gt
+1. **Prompt-Driven** (prompt-driven): A Prompt is retrieved, the user fills arguments, the LLM \
+uses the prompt, then the LLM calls a Tool.
+   - Look for: prompts that reference tool names, prompts with arguments that match tool inputs.
 
-            return data
+2. **Resource-Augmented** (resource-augmented): A Tool is called, it returns a Resource URI, \
+then the client reads the Resource.
+   - Look for: tools whose output includes URIs, tools that create/reference resources.
 
-        except httpx.ConnectError as e:
-            raise GroundTruthClientError(
-                f"Unable to connect to mcp-probe-service: {{e}}"
-            ) from e
+3. **Chain-of-Thought** (chain-of-thought): Tool A output becomes Tool B input.
+   - Look for: tools whose output fields match other tools' input parameters.
 
-    def clear_cache(self):
-        """Clear the ground truth cache."""
-        self._cache.clear()
+## Output Format
+Return a JSON array of identified workflows. Each workflow should have:
+- "type": one of "prompt-driven", "resource-augmented", "chain-of-thought"
+- "name": a descriptive name for the workflow
+- "description": brief description of what the workflow tests
+- "steps": array of step descriptions
+- "tools": array of tool names involved
+- "resources": array of resource URIs involved (if any)
+- "prompts": array of prompt names involved (if any)
 
-    async def close(self):
-        """Close the HTTP client."""
-        await self._client.aclose()
-'''
+Return ONLY the JSON array, no other text.
+"""
+
+INTEGRATION_TEST_PROMPT = """Generate a single Gherkin feature file containing integration test \
+scenarios for the following identified workflows.
+
+## Identified Workflows
+${workflows_json}
+
+## MCP Server Capabilities
+
+### Tools
+${tools_summary}
+
+### Resources
+${resources_summary}
+
+### Prompts
+${prompts_summary}
+
+## Source Code Context
+${code_context}
+
+## Requirements
+- Create ONE feature file named "Integration - Workflow Scenarios"
+- Each workflow becomes one scenario
+- Tag each scenario with its workflow type (@prompt-driven, @resource-augmented, @chain-of-thought)
+- Each scenario should exercise a multi-step workflow
+- Use semantic assertions for workflow completion checks
+
+### Gherkin Patterns
+
+For Prompt-Driven workflows:
+  @prompt-driven
+  Scenario: <workflow_name>
+    Given the MCP server is running
+    When I get prompt "<prompt_name>" with arguments {<args>}
+    And the LLM uses the prompt to call tool "<tool_name>"
+    Then the workflow should complete successfully
+
+For Resource-Augmented workflows:
+  @resource-augmented
+  Scenario: <workflow_name>
+    Given the MCP server is running
+    When I call tool "<tool_name>" with arguments {<args>}
+    And I read the resource URI from the result
+    Then the resource content should be semantically relevant to "<description>"
+
+For Chain-of-Thought workflows:
+  @chain-of-thought
+  Scenario: <workflow_name>
+    Given the MCP server is running
+    When I call tool "<tool_a>" with arguments {<args>}
+    And I pass the result to tool "<tool_b>"
+    Then the response should be semantically relevant to "<description>"
+
+Generate the complete feature file content.
+"""

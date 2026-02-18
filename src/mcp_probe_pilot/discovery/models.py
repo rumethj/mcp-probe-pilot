@@ -1,7 +1,8 @@
 """Data models for MCP server discovery results.
 
 This module defines Pydantic models for representing discovered MCP server
-capabilities including tools, resources, prompts, and server information.
+capabilities including tools, resources, prompts, server information,
+and AST-based code entity models for codebase indexing.
 """
 
 from typing import Any, Optional
@@ -189,3 +190,117 @@ class DiscoveryResult(BaseModel):
             if prompt.name == name:
                 return prompt
         return None
+
+
+# =============================================================================
+# AST Indexer Models
+# =============================================================================
+
+
+class CodeEntity(BaseModel):
+    """A code entity extracted from source code via AST parsing.
+
+    Represents a function, class, or method found in the server source code,
+    used for codebase indexing and context-aware test generation.
+
+    Attributes:
+        file_path: Relative path to the source file.
+        entity_type: Type of entity: 'function', 'class', or 'method'.
+        name: Name of the code entity.
+        code: Full source code text of the entity.
+        start_line: Starting line number in the source file.
+        end_line: Ending line number in the source file.
+        docstring: Extracted docstring (if any).
+        decorators: List of decorator names applied to the entity.
+        parent_class: Name of the parent class (for methods only).
+    """
+
+    file_path: str = Field(..., description="Relative path to the source file")
+    entity_type: str = Field(
+        ...,
+        description="Type of entity: 'function', 'class', or 'method'",
+    )
+    name: str = Field(..., description="Name of the code entity")
+    code: str = Field(..., description="Full source code text")
+    start_line: int = Field(..., description="Starting line number")
+    end_line: int = Field(..., description="Ending line number")
+    docstring: Optional[str] = Field(None, description="Extracted docstring")
+    decorators: list[str] = Field(
+        default_factory=list,
+        description="List of decorator names",
+    )
+    parent_class: Optional[str] = Field(
+        None,
+        description="Parent class name (for methods)",
+    )
+
+    @property
+    def qualified_name(self) -> str:
+        """Get the fully qualified name of the entity.
+
+        Returns:
+            For methods: 'ClassName.method_name', otherwise just the name.
+        """
+        if self.parent_class:
+            return f"{self.parent_class}.{self.name}"
+        return self.name
+
+    @property
+    def summary(self) -> str:
+        """Get a brief summary of the entity for embedding.
+
+        Returns:
+            A string combining the entity type, name, and docstring.
+        """
+        parts = [f"{self.entity_type}: {self.qualified_name}"]
+        if self.docstring:
+            parts.append(self.docstring.split("\n")[0])
+        return " - ".join(parts)
+
+
+class CodebaseIndex(BaseModel):
+    """Index of all code entities extracted from a codebase.
+
+    Represents the complete result of AST-based source code indexing,
+    including all discovered entities and file hash information for
+    incremental re-indexing.
+
+    Attributes:
+        entities: List of all extracted code entities.
+        file_hashes: Mapping of file paths to their SHA-256 hashes.
+        total_files: Total number of Python files processed.
+        total_entities: Total number of code entities extracted.
+    """
+
+    entities: list[CodeEntity] = Field(
+        default_factory=list,
+        description="List of all extracted code entities",
+    )
+    file_hashes: dict[str, str] = Field(
+        default_factory=dict,
+        description="Mapping of file paths to SHA-256 hashes",
+    )
+    total_files: int = Field(0, description="Total number of files processed")
+    total_entities: int = Field(0, description="Total number of entities extracted")
+
+    def get_entities_for_file(self, file_path: str) -> list[CodeEntity]:
+        """Get all entities from a specific file.
+
+        Args:
+            file_path: The file path to filter by.
+
+        Returns:
+            List of CodeEntity objects from the specified file.
+        """
+        return [e for e in self.entities if e.file_path == file_path]
+
+    def get_entities_by_type(self, entity_type: str) -> list[CodeEntity]:
+        """Get all entities of a specific type.
+
+        Args:
+            entity_type: The entity type to filter by ('function', 'class', 'method').
+
+        Returns:
+            List of CodeEntity objects of the specified type.
+        """
+        return [e for e in self.entities if e.entity_type == entity_type]
