@@ -1,84 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "mcp-probe-pilot"
 version = "0.1.0"
-description = "Automated testing framework for MCP server validation - test generator, executor, and report generator"
-requires-python = ">=3.10"
+description = "MCP-Probe CLI"
 readme = "README.md"
-license = { text = "MIT" }
-authors = [
-    { name = "MCP-Probe Team" }
-]
-keywords = ["mcp", "testing", "model-context-protocol", "bdd", "behave", "llm"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Software Development :: Testing",
-    "Topic :: Software Development :: Quality Assurance",
-]
-
+requires-python = ">=3.12"
 dependencies = [
-    "mcp>=1.0.0",
-    "pydantic>=2.5.0",
-    "python-dotenv>=1.0.0",
-    "behave>=1.2.6",
-    "openai>=1.0.0",
-    "anthropic>=0.18.0",
-    "google-genai>=1.0.0",
-    "jinja2>=3.0.0",
-    "jsonschema>=4.0.0",
-    "typer>=0.9.0",
-    "rich>=13.0.0",
-    "httpx>=0.27.0",
+    "typer",
+    "rich",
+    "pydantic",
+    "mcp",
 ]
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.23.0",
-    "ruff>=0.1.0",
-    "black>=23.12.0",
-    "mypy>=1.8.0",
-    "pytest-cov>=4.0.0",
-]
-
+# Links the terminal command `mcp-probe-pilot` to the `app` object inside `cli.py`
 [project.scripts]
-mcp-probe = "mcp_probe_pilot.cli:app"
-
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/mcp_probe_pilot"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-addopts = "-v --tb=short"
-markers = [
-    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
-]
-
-[tool.ruff]
-target-version = "py310"
-line-length = 100
-src = ["src", "tests"]
-
-[tool.ruff.lint]
-select = ["E", "W", "F", "I", "B", "C4", "UP"]
-ignore = ["E501"]
-
-[tool.black]
-target-version = ["py310"]
-line-length = 100
-
-[tool.mypy]
-python_version = "3.10"
-warn_return_any = true
-warn_unused_configs = true
-ignore_missing_imports = true
+mcp-probe-pilot = "mcp_probe_pilot.cli:app"
