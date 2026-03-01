@@ -7,6 +7,7 @@ that requires communication with an MCP server over stdio.
 
 import asyncio
 import shlex
+from pathlib import Path
 from typing import Any
 
 from mcp.client.session import ClientSession
@@ -45,6 +46,8 @@ class MCPSession:
         env: Optional environment variables for the server subprocess.
         timeout: Seconds to wait for any single operation before raising
             ``asyncio.TimeoutError``. Defaults to 30.
+        cwd: Working directory for the server subprocess. When ``None``
+            the subprocess inherits the current working directory.
     """
 
     def __init__(
@@ -52,12 +55,14 @@ class MCPSession:
         server_command: str,
         env: dict[str, str] | None = None,
         timeout: float = 30.0,
+        cwd: str | Path | None = None,
     ) -> None:
         parsed = shlex.split(server_command)
         self._command = parsed[0]
         self._args = parsed[1:] if len(parsed) > 1 else []
         self._env = env
         self._timeout = timeout
+        self._cwd = cwd
 
         self._stdio_ctx: Any | None = None
         self._session_ctx: Any | None = None
@@ -83,6 +88,7 @@ class MCPSession:
                 command=self._command,
                 args=self._args,
                 env=self._env,
+                cwd=self._cwd,
             )
 
             self._stdio_ctx = stdio_client(params)

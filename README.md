@@ -10,7 +10,6 @@ GEMINI_API_KEY=<your-gemini-api-key>
 
 ```json
 {
-  "project_code": "mcp-test-server",
   "server_command": "uv run mcp-test-server",
   "transport": "stdio",
   "service_url": "http://localhost:4000"

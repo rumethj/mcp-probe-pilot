@@ -11,8 +11,8 @@ This package provides tools for:
 __version__ = "0.1.0"
 __author__ = "MCP-Probe Team"
 
-from mcp_probe_pilot.config import LLMConfig, MCPProbeConfig, load_config
-from mcp_probe_pilot.service_client import (
+from mcp_probe_pilot.core.models.config import ProbeConfig
+from mcp_probe_pilot.core.service_client import (
     MCPProbeServiceClient,
     ServiceAPIError,
     ServiceClientError,
@@ -21,9 +21,7 @@ from mcp_probe_pilot.service_client import (
 
 __all__ = [
     "__version__",
-    "MCPProbeConfig",
-    "LLMConfig",
-    "load_config",
+    "ProbeConfig",
     "MCPProbeServiceClient",
     "ServiceClientError",
     "ServiceConnectionError",

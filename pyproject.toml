@@ -13,6 +13,7 @@ dependencies = [
     "rich",
     "pydantic",
     "mcp",
+    "httpx",
 ]
 
 # Links the terminal command `mcp-probe-pilot` to the `app` object inside `cli.py`
