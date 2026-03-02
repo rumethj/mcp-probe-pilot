@@ -14,6 +14,8 @@ dependencies = [
     "pydantic",
     "mcp",
     "httpx",
+    "langchain-google-genai",
+    "langchain-core",
 ]
 
 # Links the terminal command `mcp-probe-pilot` to the `app` object inside `cli.py`

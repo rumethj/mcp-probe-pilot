@@ -10,12 +10,24 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from mcp_probe_pilot.core.models import ProbeConfig
-from mcp_probe_pilot.core.models.discovery import CodebaseIndex, DiscoveryResult
+from mcp_probe_pilot.core.models import (
+    ProbeConfig,
+    CodebaseIndex, 
+    DiscoveryResult,
+    IntegrationTestPlanResult,
+    UnitTestPlanResult
+)
+# from mcp_probe_pilot.core.models.discovery import CodebaseIndex, DiscoveryResult
+# from mcp_probe_pilot.core.models.plan import (
+#     IntegrationTestPlanResult,
+#     UnitTestPlanResult,
+# )
+from mcp_probe_pilot.core.llm_client import LLMClient
 from mcp_probe_pilot.core.mcp_session import MCPSession
 from mcp_probe_pilot.core.service_client import MCPProbeServiceClient, ServiceClientError
 from mcp_probe_pilot.discovery.discoverer import MCPDiscoverer
 from mcp_probe_pilot.discovery.ast_indexer import ASTIndexer
+from mcp_probe_pilot.plan.planner import Planner
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +54,10 @@ class MCPProbeOrchestrator:
         # Discovery Information
         self.discovery_result: DiscoveryResult | None = None
         self.codebase_index: CodebaseIndex | None = None
+
+        # Planning Results
+        self.unit_test_plan: UnitTestPlanResult | None = None
+        self.integration_test_plan: IntegrationTestPlanResult | None = None
 
 
     @staticmethod
@@ -152,3 +168,74 @@ class MCPProbeOrchestrator:
 
         logger.info("Codebase index sent successfully: %s", result)
         return result
+
+    # ------------------------------------------------------------------
+    # Test Planning
+    # ------------------------------------------------------------------
+
+    def run_unit_test_planning(self) -> UnitTestPlanResult:
+        """Generate unit-test scenario plans for every discovered primitive.
+
+        Raises:
+            OrchestratorError: If discovery has not been run yet.
+        """
+        if self.discovery_result is None:
+            raise OrchestratorError(
+                "No discovery result available. Run run_discovery() first."
+            )
+
+        with LLMClient() as llm:
+            planner = Planner(llm)
+
+            tool_scenarios = []
+            for tool in self.discovery_result.tools:
+                logger.info("Planning unit tests for tool: %s", tool.name)
+                tool_scenarios.extend(planner.plan_tool_unit_tests(tool))
+
+            resource_scenarios = []
+            for resource in self.discovery_result.resources:
+                logger.info("Planning unit tests for resource: %s", resource.uri)
+                resource_scenarios.extend(
+                    planner.plan_resource_unit_tests(resource)
+                )
+
+            prompt_scenarios = []
+            for prompt in self.discovery_result.prompts:
+                logger.info("Planning unit tests for prompt: %s", prompt.name)
+                prompt_scenarios.extend(
+                    planner.plan_prompt_unit_tests(prompt)
+                )
+
+        self.unit_test_plan = UnitTestPlanResult(
+            tool_scenarios=tool_scenarios,
+            resource_scenarios=resource_scenarios,
+            prompt_scenarios=prompt_scenarios,
+        )
+        logger.info(
+            "Unit test planning complete: %d total scenarios",
+            self.unit_test_plan.num_scenarios,
+        )
+        return self.unit_test_plan
+
+    def run_integration_test_planning(self) -> IntegrationTestPlanResult:
+        """Identify cross-primitive integration-test workflow scenarios.
+
+        Raises:
+            OrchestratorError: If discovery has not been run yet.
+        """
+        if self.discovery_result is None:
+            raise OrchestratorError(
+                "No discovery result available. Run run_discovery() first."
+            )
+
+        with LLMClient() as llm:
+            planner = Planner(llm)
+            self.integration_test_plan = planner.plan_integration_tests(
+                self.discovery_result
+            )
+
+        logger.info(
+            "Integration test planning complete: %d workflow scenarios",
+            self.integration_test_plan.num_scenarios,
+        )
+        return self.integration_test_plan

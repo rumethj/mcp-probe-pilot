@@ -53,53 +53,96 @@ def main(
 
     # Step 1: MCP Server Discovery
     with console.status(
-        "[bold blue]Discovery:Discovering MCP Server capabilities...[/bold blue]", spinner="dots"
+        "[bold blue]Discovering MCP Server...[/bold blue]", spinner="dots"
     ):
-        try:
-            result = asyncio.run(orchestrator.run_discovery())
-            console.print(
-                f"[green]✓[/green] Discovery complete! "
-                f"Found {result.tool_count} tools, "
-                f"{result.resource_count} resources, "
-                f"and {result.prompt_count} prompts."
-            )
-        except Exception as exc:
-            console.print(f"[red]✗[/red] Discovery failed: {exc}")
-            raise typer.Exit(code=1)
+        # Step 1.1: Discover MCP Server capabilities
+        with console.status(
+            "[bold blue]    Discovering MCP Server capabilities...[/bold blue]", spinner="line"
+        ):
+            try:
+                result = asyncio.run(orchestrator.run_discovery())
+                console.print(
+                    f"[green]✓ \\[Discovery 1/3][/green] Discovery complete! "
+                    f"Found {result.tool_count} tools, "
+                    f"{result.resource_count} resources, "
+                    f"and {result.prompt_count} prompts."
+                )
+            except Exception as exc:
+                console.print(f"[red]✗[/red] Discovery failed: {exc}")
+                raise typer.Exit(code=1)
 
-    # Step 2: AST Codebase Indexing
+        # Step 1.2: AST Codebase Indexing
+        with console.status(
+            "[bold blue]    Discovering MCP Server Codebase...[/bold blue]",
+            spinner="line",
+        ):
+            try:
+                index = orchestrator.run_ast_indexing()
+                console.print(
+                    f"[green]✓ \\[Discovery 2/3][/green] AST indexing complete! "
+                    f"Indexed {index.total_entities} entities from {index.total_files} files."
+                )
+            except Exception as exc:
+                console.print(f"[red]✗[/red] AST indexing failed: {exc}")
+                raise typer.Exit(code=1)
+
+        # Step 1.3: Send codebase index to mcp-probe-service
+        with console.status(
+            "[bold blue]    Sending codebase index to mcp-probe-service...[/bold blue]",
+            spinner="line",
+        ):
+            try:
+                result = asyncio.run(orchestrator.send_codebase_index())
+                indexed_count = result.get("indexed_count", "unknown")
+                console.print(
+                    f"[green]✓ \\[Discovery 3/3][/green] Codebase index sent to service! "
+                    f"{indexed_count} entities indexed in ChromaDB."
+                )
+            except Exception as exc:
+                console.print(f"[red]✗[/red] Failed to send codebase index: {exc}")
+                raise typer.Exit(code=1)
+
+
+    # Step 2: Test Generation Pipeline
     with console.status(
-        "[bold blue]Indexing repository source code...[/bold blue]",
-        spinner="bouncingBar",
+        "[bold blue]Generating Tests[/bold blue]",
+        spinner="dots",
     ):
-        try:
-            index = orchestrator.run_ast_indexing()
-            console.print(
-                f"[green]✓[/green] AST indexing complete! "
-                f"Indexed {index.total_entities} entities from {index.total_files} files."
-            )
-        except Exception as exc:
-            console.print(f"[red]✗[/red] AST indexing failed: {exc}")
-            raise typer.Exit(code=1)
+        # Step 2.1: Planning Unit Test Scenarios
+        with console.status(
+            "[bold blue]    Planning Unit Test Scenarios[/bold blue]",
+            spinner="line",
+        ):
+            try:
+                result = orchestrator.run_unit_test_planning()
+                console.print(
+                    f"[green]✓ \\[Test Generation 1/5][/green] Unit Test Planning complete! "
+                    f"Planned {result.num_scenarios} scenarios."
+                    f"Scenario plans: {'\n'.join([f'{value}' for value in result.scenario_plans])}" # Temporary debug print CHECK
+                )
+            except Exception as exc:
+                console.print(f"[red]✗[/red] Unit Test Planning failed: {exc}")
+                raise typer.Exit(code=1)
+        
+        # Step 2.2: Planning Integration Test Scenarios
+        with console.status(
+            "[bold blue]    Planning Integration Test Scenarios[/bold blue]",
+            spinner="line",
+        ):
+            try:
+                result = orchestrator.run_integration_test_planning()
+                console.print(
+                    f"[green]✓ \\[Test Generation 2/5][/green] Integration Test Planning complete! "
+                    f"Generated {result.num_scenarios} scenarios."
+                    f"Scenario plans: {'\n'.join([f'{value}' for value in result.scenario_plans])}" # Temporary debug print CHECK
+                )
+            except Exception as exc:
+                console.print(f"[red]✗[/red] Integration Test Planning failed: {exc}")
+                raise typer.Exit(code=1)
 
-    # Step 3: Send codebase index to mcp-probe-service
-    with console.status(
-        "[bold blue]Sending codebase index to mcp-probe-service...[/bold blue]",
-        spinner="bouncingBar",
-    ):
-        try:
-            result = asyncio.run(orchestrator.send_codebase_index())
-            indexed_count = result.get("indexed_count", "unknown")
-            console.print(
-                f"[green]✓[/green] Codebase index sent to service! "
-                f"{indexed_count} entities indexed in ChromaDB."
-            )
-        except Exception as exc:
-            console.print(f"[red]✗[/red] Failed to send codebase index: {exc}")
-            raise typer.Exit(code=1)
 
-    # Step 4: Test Generation (placeholder)
-    console.print("[dim]⏭  Test generation not yet implemented.[/dim]")
+
+    
 
     console.print("\n[bold green]✨ Pipeline finished successfully![/bold green]\n")
 

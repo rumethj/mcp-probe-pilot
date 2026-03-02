@@ -10,6 +10,11 @@ from mcp_probe_pilot.core.models.discovery import (
     ServerInfo,
     ToolInfo,
 )
+from mcp_probe_pilot.core.models.plan import (
+    IntegrationTestPlanResult,
+    ScenarioPlan,
+    UnitTestPlanResult,
+)
 
 __all__ = [
     "ProbeConfig",
@@ -22,4 +27,7 @@ __all__ = [
     "ServerCapabilities",
     "ServerInfo",
     "ToolInfo",
+    "ScenarioPlan",
+    "UnitTestPlanResult",
+    "IntegrationTestPlanResult",
 ]
