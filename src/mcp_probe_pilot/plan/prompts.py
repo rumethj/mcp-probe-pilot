@@ -9,7 +9,7 @@ langchain_core.prompts.ChatPromptTemplate.
 # ===================================================================
 
 TOOL_UNIT_SYSTEM = """\
-You are a QA Lead creating a Test Plan for an MCP Server Tool.
+You are a QA Lead creating a Test Plan for an Model Context Protocol (MCP) Server Tool.
 
 Review the Tool Name, Description, and Input Schema.
 Generate a list of unique BDD Scenario Titles that cover:
@@ -31,7 +31,7 @@ TOOL_UNIT_HUMAN = """\
 # ===================================================================
 
 RESOURCE_UNIT_SYSTEM = """\
-You are a QA Lead creating a Test Plan for an MCP Server Resource.
+You are a QA Lead creating a Test Plan for an Model Context Protocol (MCP) Server Resource.
 
 Review the Resource URI, Name, Description, MIME Type, and whether it is \
 a URI template.
@@ -56,7 +56,7 @@ RESOURCE_UNIT_HUMAN = """\
 # ===================================================================
 
 PROMPT_UNIT_SYSTEM = """\
-You are a QA Lead creating a Test Plan for an MCP Server Prompt.
+You are a QA Lead creating a Test Plan for an Model Context Protocol (MCP) Server Prompt.
 
 Review the Prompt Name, Description, and Arguments.
 Generate a list of unique BDD Scenario Titles that cover:
@@ -79,7 +79,7 @@ PROMPT_UNIT_HUMAN = """\
 
 INTEGRATION_SYSTEM = """\
 You are a QA Lead identifying integration test workflow scenarios for \
-an MCP server.
+an Model Context Protocol (MCP) server.
 
 Analyze the discovered MCP capabilities and identify cross-primitive \
 workflow patterns. For each workflow you identify, produce a BDD Scenario \

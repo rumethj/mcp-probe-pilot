@@ -27,6 +27,10 @@ from mcp_probe_pilot.core.mcp_session import MCPSession
 from mcp_probe_pilot.core.service_client import MCPProbeServiceClient, ServiceClientError
 from mcp_probe_pilot.discovery.discoverer import MCPDiscoverer
 from mcp_probe_pilot.discovery.ast_indexer import ASTIndexer
+from mcp_probe_pilot.generate.gherkin_feature_generator import (
+    GenerationResult,
+    GherkinFeatureGenerator,
+)
 from mcp_probe_pilot.plan.planner import Planner
 
 logger = logging.getLogger(__name__)
@@ -239,3 +243,52 @@ class MCPProbeOrchestrator:
             self.integration_test_plan.num_scenarios,
         )
         return self.integration_test_plan
+
+    # ------------------------------------------------------------------
+    # Feature File Generation
+    # ------------------------------------------------------------------
+
+    async def generate_feature_files(self) -> GenerationResult:
+        """Generate Gherkin .feature files from the test plans.
+
+        Raises:
+            OrchestratorError: If discovery or planning has not been run yet.
+        """
+        # Initial checks
+        if self.discovery_result is None:
+            raise OrchestratorError(
+                "No discovery result available. Run run_discovery() first."
+            )
+        if self.unit_test_plan is None:
+            raise OrchestratorError(
+                "No unit test plan available. Run run_unit_test_planning() first."
+            )
+        if self.integration_test_plan is None:
+            raise OrchestratorError(
+                "No integration test plan available. "
+                "Run run_integration_test_planning() first."
+            )
+
+        output_dir = self.repository_root / ".mcp-probe" / "features"
+
+        with LLMClient() as llm:
+            async with MCPProbeServiceClient(
+                base_url=self.config.service_url
+            ) as service:
+                generator = GherkinFeatureGenerator(
+                    llm=llm,
+                    service_client=service,
+                    output_dir=output_dir,
+                    discovery_result=self.discovery_result,
+                )
+                result = await generator.generate_all(
+                    unit_plan=self.unit_test_plan,
+                    integration_plan=self.integration_test_plan,
+                )
+
+        logger.info(
+            "Feature generation complete: %d generated, %d failed",
+            result.files_generated,
+            result.files_failed,
+        )
+        return result

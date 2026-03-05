@@ -140,6 +140,22 @@ def main(
                 console.print(f"[red]✗[/red] Integration Test Planning failed: {exc}")
                 raise typer.Exit(code=1)
 
+        # Step 2.3: Generating Feature Files
+        with console.status(
+            "[bold blue]    Generating Feature Files[/bold blue]",
+            spinner="line",
+        ):
+            try:
+                result = asyncio.run(orchestrator.generate_feature_files())
+                console.print(
+                    f"[green]✓ \\[Test Generation 3/5][/green] Feature Files generated! "
+                    f"{result.files_generated} files written, {result.files_failed} failed."
+                )
+                for warning in result.validation_warnings:
+                    console.print(f"  [yellow]⚠ {warning}[/yellow]")
+            except Exception as exc:
+                console.print(f"[red]✗[/red] Feature Files generation failed: {exc}")
+                raise typer.Exit(code=1)
 
 
     
