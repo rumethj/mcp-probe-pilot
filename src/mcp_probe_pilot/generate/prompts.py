@@ -15,14 +15,15 @@ Rules:
 - Include tags (@happy-path, @error-case, @edge-case) on each scenario.
 - For semantic assertions, use: Then the response should be semantically relevant to "<description>"
 - For error cases, test with missing, invalid, and boundary values.
-- The feature should have this for the Background: Given the MCP Client is running
+- The feature should have this for the Background: Given the MCP Client is initialized and connected to the MCP Server: "${server_command}"
 - Re-use as much of the same steps in different scenarios as possible.
 
-You must write the Gherkin feature file inside a single markdown code block (gherkin ...). When you have completely finished writing the entire feature file, you MUST output the exact string [END_OF_FEATURE] on a new line outside the code block.
+When you have completely finished writing the entire feature file, you MUST output the exact string [END_OF_FEATURE] on a new line outside the code block.
 """
 
 TOOL_UNIT_HUMAN = """\
 Generate a Gherkin feature file for testing the MCP tool "${tool_name}". The scenarios should be based on the following scenarios:
+
 
 ## Scenarios
 ${scenarios}
@@ -34,6 +35,18 @@ ${scenarios}
 
 ## Relevant Source Code Context
 ${code_context}
+
+## Additional rules
+- The "When" statement should use the MCP Client. Example:
+
+For tools that have parameters, use the following format:
+  When the MCP Client calls the tool "{tool_name}" with parameters
+      | parameter    | value             |
+      | param_1      | value_1           |
+
+For tools that do not have parameters, use the following format:
+  When the MCP Client calls the tool "{tool_name}"
+  Then the response should be successful
 """
 
 RESOURCE_UNIT_HUMAN = """\
@@ -52,13 +65,25 @@ ${scenarios}
 ## Relevant Source Code Context
 ${code_context}
 
+## Additional rules
+- The "When" statement should use the MCP Client. Example:
+
 Use this format for resource access:
-  When I read resource "${resource_uri}"
+  When the MCP Client reads the resource "${resource_uri}"
   Then the response should be successful
   And the response content type should be "${mime_type}"
 
 For template resources, include parameter substitution:
-  When I read resource "<uri_with_params>"
+  When the MCP Client reads the resource "<uri_with_params>"
+
+For specific header and body, use the following format:
+  When the MCP Client reads the resource "<uri_with_params>" with header "{<header>}"
+  Then the response should be successful
+  And the response content type should be "${mime_type}"
+
+  When the MCP Client reads the resource "<uri_with_params>" with body "{<body>}"
+  Then the response should be successful
+  And the response content type should be "${mime_type}"
 """
 
 PROMPT_UNIT_HUMAN = """\
@@ -75,13 +100,25 @@ ${scenarios}
 ## Relevant Source Code Context
 ${code_context}
 
+## Additional rules
+- The "When" statement should use the MCP Client. Example:
+
 Use this format for prompt retrieval:
-  When I get prompt "${prompt_name}" with arguments {<json_arguments>}
+  When the MCP Client gets the prompt "${prompt_name}" with arguments
+    | argument    | value             |
+    | arg_1       | value_1           |
+  Then the response should be successful
+  And the response should contain prompt messages
+
+For prompts that do not have arguments, use the following format:
+  When the MCP Client gets the prompt "${prompt_name}"
   Then the response should be successful
   And the response should contain prompt messages
 
 For error cases:
-  When I get prompt "${prompt_name}" with arguments {<invalid_arguments>}
+  When the MCP Client gets the prompt "${prompt_name}" with arguments
+    | argument    | value             |
+    | arg_1       | value_1           |
   Then the response should contain an error
 """
 
@@ -103,32 +140,32 @@ ${code_context}
 - Tag each scenario with its workflow type (@prompt-driven, @resource-augmented, @chain-of-thought)
 - Each scenario should exercise a multi-step workflow
 - If it is more suitable you may use semantic assertions for workflow completion checks
+- The "When" statement should use the MCP Client and be based on a MCP Client query.
+- The "Then" statement should validate that the MCP Client called the required primitive/s and recieved an expected response.
 
 ### Gherkin Patterns
 
 For Prompt-Driven scenarios:
   @prompt-driven
   Scenario: <workflow_name>
-    Given the MCP server is running
-    When I get prompt "<prompt_name>" with arguments {<args>}
-    And the LLM uses the prompt to call tool "<tool_name>"
-    Then the workflow should complete successfully
+    When the MCP Client queries "<query>"
+    Then the MCP Client gets the prompt "<prompt_name>" with arguments
+    And the MCP Client uses the prompt to call tool "<tool_name>"
+    And the workflow should complete successfully
 
 For Resource-Augmented scenarios:
   @resource-augmented
   Scenario: <workflow_name>
-    Given the MCP server is running
-    When I call tool "<tool_name>" with arguments {<args>}
-    And I read the resource URI from the result
-    Then the resource content should be semantically relevant to "<description>"
+    When the MCP Client queries "<query>"
+    Then the MCP Client reads the resource "<resource_uri>"
+    And the response should be semantically relevant to "<description>"
 
 For Chain-of-Thought scenarios:
   @chain-of-thought
   Scenario: <workflow_name>
-    Given the MCP server is running
-    When I call tool "<tool_a>" with arguments {<args>}
-    And I pass the result to tool "<tool_b>"
-    Then the response should be semantically relevant to "<description>"
+    When the MCP Client queries "<query>"
+    Then the MCP Client calls the tool "<tool_name>" with the result
+    And the response should be semantically relevant to "<description>"
 """
 
 

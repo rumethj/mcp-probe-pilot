@@ -46,6 +46,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CONCURRENCY_LIMIT = 3
+MAX_SCENARIOS_PER_BATCH = 15
+MAX_RETRIES = 1
+
+
+class GherkinGenerationError(Exception):
+    """Raised when generated content is not valid Gherkin."""
 
 
 class GenerationResult(BaseModel):
@@ -65,11 +71,13 @@ class GherkinFeatureGenerator:
         service_client: MCPProbeServiceClient,
         output_dir: Path,
         discovery_result: DiscoveryResult,
+        server_command: str,
     ) -> None:
         self._llm = llm
         self._service_client = service_client
         self._output_dir = output_dir
         self._discovery = discovery_result
+        self._server_command = server_command
         self._semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
     # ------------------------------------------------------------------
@@ -150,27 +158,56 @@ class GherkinFeatureGenerator:
         prim_name: str,
         scenarios: list[ScenarioPlan],
     ) -> dict[str, Any]:
-        """Generate a single .feature file for one MCP primitive."""
+        """Generate a single .feature file for one MCP primitive.
+
+        When the scenario count exceeds MAX_SCENARIOS_PER_BATCH the list is
+        split into batches, each sent as an independent LLM call, and the
+        resulting Gherkin blocks are merged into a single feature file.
+        """
         async with self._semaphore:
             logger.info("Generating %s unit feature: %s", prim_type, prim_name)
 
             code_context = await self._query_code_context(prim_name)
-            human_content = self._render_unit_prompt(
-                prim_type, prim_name, scenarios, code_context
+
+            batches = [
+                scenarios[i : i + MAX_SCENARIOS_PER_BATCH]
+                for i in range(0, len(scenarios), MAX_SCENARIOS_PER_BATCH)
+            ]
+
+            gherkin_parts: list[str] = []
+            combined_warning: str | None = None
+
+            for batch_idx, batch in enumerate(batches):
+                label = f"{prim_type}/{prim_name}"
+                if len(batches) > 1:
+                    label += f" [batch {batch_idx + 1}/{len(batches)}]"
+
+                human_content = self._render_unit_prompt(
+                    prim_type, prim_name, batch, code_context
+                )
+                gherkin, warning = await self._generate_and_validate(
+                    human_content, label
+                )
+                if warning:
+                    combined_warning = warning
+                gherkin_parts.append(gherkin)
+
+            final = (
+                self._merge_feature_batches(gherkin_parts)
+                if len(gherkin_parts) > 1
+                else gherkin_parts[0]
             )
 
-            raw_response = await self._call_llm(human_content)
-            gherkin_content, warning = self._process_llm_output(
-                raw_response, f"{prim_type}/{prim_name}"
-            )
+            if not final.endswith("\n"):
+                final += "\n"
 
             safe_name = re.sub(r"[^\w]", "_", prim_name).lower()
             filename = f"{prim_type}_{safe_name}.feature"
             filepath = self._output_dir / filename
-            filepath.write_text(gherkin_content, encoding="utf-8")
+            filepath.write_text(final, encoding="utf-8")
             logger.info("Wrote feature file: %s", filepath)
 
-            return {"file": str(filepath), "warning": warning}
+            return {"file": str(filepath), "warning": combined_warning}
 
     # ------------------------------------------------------------------
     # Integration feature generation
@@ -204,10 +241,12 @@ class GherkinFeatureGenerator:
                 code_context=code_context,
             )
 
-            raw_response = await self._call_llm(human_content)
-            gherkin_content, warning = self._process_llm_output(
-                raw_response, "integration"
+            gherkin_content, warning = await self._generate_and_validate(
+                human_content, "integration"
             )
+
+            if not gherkin_content.endswith("\n"):
+                gherkin_content += "\n"
 
             filepath = self._output_dir / "integration_workflows.feature"
             filepath.write_text(gherkin_content, encoding="utf-8")
@@ -284,10 +323,38 @@ class GherkinFeatureGenerator:
     # LLM interaction
     # ------------------------------------------------------------------
 
+    async def _generate_and_validate(
+        self, human_content: str, label: str
+    ) -> tuple[str, str | None]:
+        """Call the LLM, extract Gherkin, and validate.
+
+        Retries up to MAX_RETRIES times on GherkinGenerationError before
+        propagating the exception.
+        """
+        last_error: GherkinGenerationError | None = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                raw_response = await self._call_llm(human_content)
+                return self._process_llm_output(raw_response, label)
+            except GherkinGenerationError as exc:
+                last_error = exc
+                if attempt < MAX_RETRIES:
+                    logger.info(
+                        "[%s] Retrying generation (attempt %d/%d): %s",
+                        label,
+                        attempt + 2,
+                        MAX_RETRIES + 1,
+                        exc,
+                    )
+        raise last_error  # type: ignore[misc]
+
     async def _call_llm(self, human_content: str) -> str:
         """Send system + human messages to the LLM and return the raw text."""
+        system_content = Template(SYSTEM_PROMPT).safe_substitute(
+            server_command=self._server_command,
+        )
         messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=system_content),
             HumanMessage(content=human_content),
         ]
         response = await self._llm.ainvoke(messages)
@@ -328,7 +395,11 @@ class GherkinFeatureGenerator:
     def _process_llm_output(
         self, raw_response: str, label: str
     ) -> tuple[str, str | None]:
-        """Extract gherkin, validate, and return (content, optional_warning)."""
+        """Extract gherkin, validate, and return (content, optional_warning).
+
+        Raises GherkinGenerationError when the extracted content cannot be
+        parsed as valid Gherkin syntax.
+        """
         gherkin_content, has_end_marker = self._extract_gherkin(raw_response)
         warning: str | None = None
 
@@ -339,11 +410,10 @@ class GherkinFeatureGenerator:
             gherkin_content = self._remove_last_scenario(gherkin_content)
             warning = f"{label}: [END_OF_FEATURE] missing — last scenario trimmed"
 
-        is_valid = self._validate_gherkin(gherkin_content)
-        if not is_valid:
-            msg = f"{label}: Gherkin syntax validation failed"
-            logger.warning(msg)
-            warning = msg
+        if not self._validate_gherkin(gherkin_content):
+            raise GherkinGenerationError(
+                f"{label}: Gherkin syntax validation failed"
+            )
 
         if not gherkin_content.endswith("\n"):
             gherkin_content += "\n"
@@ -355,6 +425,7 @@ class GherkinFeatureGenerator:
         """Pull the Gherkin text out of the LLM's markdown response.
 
         Returns (gherkin_text, end_of_feature_found).
+        Raises GherkinGenerationError when no Gherkin content can be found.
         """
         has_end_marker = "[END_OF_FEATURE]" in llm_response
 
@@ -367,7 +438,12 @@ class GherkinFeatureGenerator:
             return match.group(1).strip(), has_end_marker
 
         content = llm_response.replace("[END_OF_FEATURE]", "").strip()
-        return content, has_end_marker
+        if re.match(r"\s*(Feature:|@)", content):
+            return content, has_end_marker
+
+        raise GherkinGenerationError(
+            "LLM response contains no recognizable Gherkin content"
+        )
 
     @staticmethod
     def _remove_last_scenario(gherkin_text: str) -> str:
@@ -404,6 +480,49 @@ class GherkinFeatureGenerator:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _merge_feature_batches(parts: list[str]) -> str:
+        """Merge multiple feature-file outputs into one.
+
+        Keeps the Feature header + Background from the first part and appends
+        only the Scenario blocks extracted from subsequent parts.
+        """
+        if len(parts) <= 1:
+            return parts[0] if parts else ""
+
+        merged = parts[0].rstrip()
+
+        for part in parts[1:]:
+            scenarios = GherkinFeatureGenerator._extract_scenario_blocks(part)
+            if scenarios:
+                merged += "\n\n" + scenarios.rstrip()
+
+        return merged + "\n"
+
+    @staticmethod
+    def _extract_scenario_blocks(gherkin_text: str) -> str:
+        """Return everything from the first Scenario line onward.
+
+        Includes any tag lines (``@...``) immediately preceding the first
+        ``Scenario:`` or ``Scenario Outline:`` keyword.
+        """
+        lines = gherkin_text.split("\n")
+        first_scenario: int | None = None
+
+        for i, line in enumerate(lines):
+            if re.match(r"\s*(Scenario|Scenario Outline):", line):
+                first_scenario = i
+                break
+
+        if first_scenario is None:
+            return ""
+
+        start = first_scenario
+        while start > 0 and lines[start - 1].strip().startswith("@"):
+            start -= 1
+
+        return "\n".join(lines[start:])
 
     def _find_resource(self, identifier: str) -> ResourceInfo | None:
         """Look up a resource by URI first, then by name."""

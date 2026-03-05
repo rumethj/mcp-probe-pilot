@@ -17,7 +17,7 @@ import os
 DEFAULT_CONFIG = {
     "model": "gemini-2.5-flash",
     "temperature": 0.2,
-    "max_output_tokens": 8192,
+    "max_output_tokens": 65536,
     "api_key": os.getenv("GEMINI_API_KEY"),
 }
 

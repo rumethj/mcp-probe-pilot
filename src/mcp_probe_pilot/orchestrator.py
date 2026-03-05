@@ -280,6 +280,7 @@ class MCPProbeOrchestrator:
                     service_client=service,
                     output_dir=output_dir,
                     discovery_result=self.discovery_result,
+                    server_command=self.config.server_command,
                 )
                 result = await generator.generate_all(
                     unit_plan=self.unit_test_plan,
