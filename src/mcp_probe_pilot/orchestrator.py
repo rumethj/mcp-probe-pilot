@@ -269,7 +269,7 @@ class MCPProbeOrchestrator:
                 "Run run_integration_test_planning() first."
             )
 
-        output_dir = self.repository_root / ".mcp-probe" / "features"
+        output_dir = self.repository_root / "features"
 
         with LLMClient() as llm:
             async with MCPProbeServiceClient(
