@@ -16,6 +16,7 @@ dependencies = [
     "httpx",
     "langchain-google-genai",
     "langchain-core",
+    "gherkin-official",
 ]
 
 # Links the terminal command `mcp-probe-pilot` to the `app` object inside `cli.py`
