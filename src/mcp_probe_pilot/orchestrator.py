@@ -31,6 +31,12 @@ from mcp_probe_pilot.generate.gherkin_feature_generator import (
     GenerationResult,
     GherkinFeatureGenerator,
 )
+from mcp_probe_pilot.generate.gherkin_formatter import GherkinFormatter
+# from mcp_probe_pilot.generate.step_implementation_generator import (
+#     StepImplementationGenerator,
+#     StepImplementationResult,
+# )
+from mcp_probe_pilot.core.models.gherkin_feature import GherkinFeatureCollection
 from mcp_probe_pilot.plan.planner import Planner
 
 logger = logging.getLogger(__name__)
@@ -293,3 +299,129 @@ class MCPProbeOrchestrator:
             result.files_failed,
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Feature File Validation and Formatting
+    # ------------------------------------------------------------------
+
+    def validate_and_format_feature_files(self) -> GherkinFeatureCollection:
+        """Validate and normalize feature files for step consistency.
+
+        Parses all .feature files in the features directory, normalizes step text
+        to canonical patterns, and writes the normalized files back to disk.
+
+        Returns:
+            GherkinFeatureCollection: The parsed and normalized collection of features,
+            ready for use in the step implementation generation stage.
+
+        Raises:
+            OrchestratorError: If no feature files exist.
+        """
+        features_dir = self.repository_root / "features"
+
+        if not features_dir.exists():
+            raise OrchestratorError(
+                f"Features directory not found at {features_dir}. "
+                "Run generate_feature_files() first."
+            )
+
+        feature_files = list(features_dir.glob("*.feature"))
+        if not feature_files:
+            raise OrchestratorError(
+                f"No feature files found in {features_dir}. "
+                "Run generate_feature_files() first."
+            )
+
+        logger.info(
+            "Validating and formatting %d feature files in %s",
+            len(feature_files),
+            features_dir,
+        )
+
+        formatter = GherkinFormatter()
+        collection = formatter.format_directory(features_dir)
+
+        logger.info(
+            "Feature file formatting complete: %d features, %d unique steps",
+            len(collection.features),
+            len(collection.get_unique_step_texts()),
+        )
+
+        return collection
+
+    # ------------------------------------------------------------------
+    # Step Implementation Generation (SCAFFOLDING)
+    # ------------------------------------------------------------------
+
+    # async def generate_step_implementations(self) -> StepImplementationResult:
+    #     """Generate step implementations for the feature files.
+
+    #     Processes feature files sequentially, scenarios within each feature in parallel.
+    #     Fetches prebuilt step definitions from mcp-probe-service and generates
+    #     implementations for missing steps.
+
+    #     Raises:
+    #         OrchestratorError: If no feature files exist.
+    #     """
+    #     output_dir = self.repository_root / "features"
+    #     feature_files = list(output_dir.glob("*.feature"))
+
+    #     if not feature_files:
+    #         raise OrchestratorError(
+    #             "No feature files found. Run generate_feature_files() first."
+    #         )
+
+    #     logger.info(
+    #         "Found %d feature files for step implementation", len(feature_files)
+    #     )
+
+    #     try:
+    #         async with MCPProbeServiceClient(
+    #             base_url=self.config.service_url
+    #         ) as service:
+    #             written_files = await service.download_prebuilts(output_dir)
+    #             logger.info(
+    #                 "Downloaded %d prebuilt files to %s",
+    #                 len(written_files),
+    #                 output_dir,
+    #             )
+
+    #             prebuilt_files = await service.get_prebuilts()
+    #     except ServiceClientError as exc:
+    #         raise OrchestratorError(
+    #             f"Failed to fetch prebuilts from service: {exc}"
+    #         ) from exc
+
+    #     steps_code = next(
+    #         (
+    #             f["content"]
+    #             for f in prebuilt_files
+    #             if f["path"].endswith("steps.py")
+    #         ),
+    #         "",
+    #     )
+
+    #     if not steps_code:
+    #         logger.warning("No prebuilt steps.py found, starting from scratch")
+
+    #     with LLMClient() as llm:
+    #         result = None
+    #     #     generator = StepImplementationGenerator(
+    #     #         llm=llm,
+    #     #         output_dir=output_dir,
+    #     #         prebuilt_steps_code=steps_code,
+    #     #     )
+    #     #     result = await generator.generate_all(feature_files)
+
+    #     # logger.info(
+    #     #     "Step implementation complete: %d generated, %d skipped, %d errors",
+    #     #     result.steps_generated,
+    #     #     result.steps_skipped,
+    #     #     len(result.validation_errors),
+    #     # )
+
+    #     # if result.validation_errors:
+    #     #     for error in result.validation_errors:
+    #     #         logger.warning("Validation error: %s", error)
+
+    #     return result

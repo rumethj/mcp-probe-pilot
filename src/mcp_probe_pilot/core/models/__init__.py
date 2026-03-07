@@ -15,7 +15,13 @@ from mcp_probe_pilot.core.models.plan import (
     ScenarioPlan,
     UnitTestPlanResult,
 )
-
+from mcp_probe_pilot.core.models.gherkin_feature import (
+    GherkinFeature,
+    GherkinFeatureCollection,
+    GherkinStep,
+    GherkinStepType,
+    GherkinScenario,
+)
 __all__ = [
     "ProbeConfig",
     "CodebaseIndex",

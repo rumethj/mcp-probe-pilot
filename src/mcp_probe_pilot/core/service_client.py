@@ -5,6 +5,7 @@ all REST calls to the service's codebase / ChromaDB endpoints.
 """
 
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 import httpx
@@ -176,3 +177,36 @@ class MCPProbeServiceClient:
             raise ServiceConnectionError(
                 f"Unable to connect to service: {exc}"
             ) from exc
+
+    # ------------------------------------------------------------------
+    # Prebuilts
+    # ------------------------------------------------------------------
+
+    async def get_prebuilts(self) -> list[dict[str, str]]:
+        """Fetch all prebuilt scaffolding files from the service."""
+        try:
+            response = await self.client.get("/api/prebuilts")
+            data = await self._handle_response(response)
+            return data.get("files", [])
+        except httpx.ConnectError as exc:
+            raise ServiceConnectionError(
+                f"Unable to connect to service: {exc}"
+            ) from exc
+
+    async def download_prebuilts(self, target_dir: Path) -> list[Path]:
+        """Fetch prebuilt files and write them into *target_dir*.
+
+        Directory structure is preserved (e.g. ``helper/mcp_client.py``
+        becomes ``target_dir/helper/mcp_client.py``).
+
+        Returns the list of paths that were written.
+        """
+        files = await self.get_prebuilts()
+        written: list[Path] = []
+        for entry in files:
+            dest = target_dir / entry["path"]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(entry["content"], encoding="utf-8")
+            written.append(dest)
+            logger.debug("Wrote prebuilt file: %s", dest)
+        return written

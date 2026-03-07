@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 
 import typer
@@ -9,6 +10,20 @@ from mcp_probe_pilot.orchestrator import MCPProbeOrchestrator, OrchestratorError
 
 app = typer.Typer(add_completion=False, help="MCP-Probe CLI")
 console = Console()
+
+
+def setup_logging(repo_root: Path) -> Path:
+    """Configure logging to write to a file in the repository."""
+    log_file = repo_root / "mcp-probe.log"
+    
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, mode="w", encoding="utf-8"),
+        ],
+    )
+    return log_file
 
 
 @app.command()
@@ -30,6 +45,9 @@ def main(
     """
     Run the MCP-Probe pipeline using the configuration found in the repository root.
     """
+    # Set up logging to file
+    log_file = setup_logging(repo_root)
+    
     try:
         orchestrator = MCPProbeOrchestrator(
             repository_root=repo_root, generate_new=generate_new
@@ -116,7 +134,7 @@ def main(
             try:
                 result = orchestrator.run_unit_test_planning()
                 console.print(
-                    f"[green]✓ \\[Test Generation 1/5][/green] Unit Test Planning complete! "
+                    f"[green]✓ \\[Test Generation 1/6][/green] Unit Test Planning complete! "
                     f"Planned {result.num_scenarios} scenarios."
                     f"Scenario plans: {'\n'.join([f'{value}' for value in result.scenario_plans])}" # Temporary debug print CHECK
                 )
@@ -132,7 +150,7 @@ def main(
             try:
                 result = orchestrator.run_integration_test_planning()
                 console.print(
-                    f"[green]✓ \\[Test Generation 2/5][/green] Integration Test Planning complete! "
+                    f"[green]✓ \\[Test Generation 2/6][/green] Integration Test Planning complete! "
                     f"Generated {result.num_scenarios} scenarios."
                     f"Scenario plans: {'\n'.join([f'{value}' for value in result.scenario_plans])}" # Temporary debug print CHECK
                 )
@@ -148,7 +166,7 @@ def main(
             try:
                 result = asyncio.run(orchestrator.generate_feature_files())
                 console.print(
-                    f"[green]✓ \\[Test Generation 3/5][/green] Feature Files generated! "
+                    f"[green]✓ \\[Test Generation 3/6][/green] Feature Files generated! "
                     f"{result.files_generated} files written, {result.files_failed} failed."
                 )
                 for warning in result.validation_warnings:
@@ -158,9 +176,43 @@ def main(
                 raise typer.Exit(code=1)
 
 
+        # Step 2.4: Validating and Formatting Feature Files
+        with console.status(
+            "[bold blue]    Validating and Formatting Feature Files[/bold blue]",
+            spinner="line",
+        ):
+            try:
+                result = orchestrator.validate_and_format_feature_files()
+                console.print(f"[green]✓ \\[Test Generation 4/6][/green] Feature Files validated and formatted! {len(result.get_unique_step_texts())} unique steps.")
+            except Exception as exc:
+                console.print(f"[red]✗[/red] Feature Files validation and formatting failed: {exc}")
+                raise typer.Exit(code=1)
+
+
+        # Step 2.5: Generating Step Implementations
+        # with console.status(
+        #     "[bold blue]    Generating Step Implementations[/bold blue]",
+        #     spinner="line",
+        # ):
+        #     try:
+        #         result = asyncio.run(orchestrator.generate_step_implementations())
+        #         console.print(
+        #             f"[green]✓ \\[Test Generation 5/6][/green] Step Implementations generated! "
+        #             f"{result.steps_generated} steps generated, {result.steps_skipped} skipped."
+        #         )
+        #         if result.output_file:
+        #             console.print(f"  [dim]Output: {result.output_file}[/dim]")
+        #         for error in result.validation_errors:
+        #             console.print(f"  [yellow]⚠ {error}[/yellow]")
+        #     except Exception as exc:
+        #         console.print(f"[red]✗[/red] Step Implementations generation failed: {exc}")
+        #         raise typer.Exit(code=1)
+
+
     
 
-    console.print("\n[bold green]✨ Pipeline finished successfully![/bold green]\n")
+    console.print("\n[bold green]✨ Pipeline finished successfully![/bold green]")
+    console.print(f"[dim]Detailed logs: {log_file}[/dim]\n")
 
 
 if __name__ == "__main__":

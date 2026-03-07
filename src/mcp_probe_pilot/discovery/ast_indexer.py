@@ -31,6 +31,16 @@ DEFAULT_EXCLUDE_DIRS: set[str] = {
     "build",
     ".eggs",
     "*.egg-info",
+    "features",
+    "tests",
+    "test",
+    "tests_files",
+    "test_files",
+    "tests_data",
+    "test_data",
+    "tests_results",
+    "test_results",
+    "tests_reports",
 }
 
 DEFAULT_EXCLUDE_FILES: set[str] = {

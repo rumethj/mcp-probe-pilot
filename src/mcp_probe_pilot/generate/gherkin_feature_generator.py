@@ -22,6 +22,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from mcp_probe_pilot.generate.prompts import (
+    CANONICAL_STEP_LIBRARY,
     INTEGRATION_HUMAN,
     PROMPT_UNIT_HUMAN,
     RESOURCE_UNIT_HUMAN,
@@ -79,6 +80,7 @@ class GherkinFeatureGenerator:
         self._discovery = discovery_result
         self._server_command = server_command
         self._semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+        self._generated_step_patterns: set[str] = set()
 
     # ------------------------------------------------------------------
     # Public API
@@ -89,62 +91,62 @@ class GherkinFeatureGenerator:
         unit_plan: UnitTestPlanResult,
         integration_plan: IntegrationTestPlanResult,
     ) -> GenerationResult:
-        """Generate all feature files concurrently (semaphore-bounded)."""
-        self._output_dir.mkdir(parents=True, exist_ok=True)
+        """Generate all feature files sequentially to enable step reuse tracking.
 
-        tasks: list[asyncio.Task] = []
+        Features are processed one at a time so that steps extracted from each
+        generated feature can be propagated to subsequent features, encouraging
+        the LLM to reuse the same step patterns.
+        """
+        self._output_dir.mkdir(parents=True, exist_ok=True)
+        summary = GenerationResult()
+
+        generation_queue: list[tuple[str, str, list]] = []
 
         for tool in self._discovery.tools:
             scenarios = unit_plan.get_scenario_plans("tool", tool.name)
             if scenarios:
-                tasks.append(
-                    asyncio.create_task(
-                        self._generate_unit_feature("tool", tool.name, scenarios)
-                    )
-                )
+                generation_queue.append(("tool", tool.name, scenarios))
 
         for resource in self._discovery.resources:
             identifier = resource.name or resource.uri
             scenarios = unit_plan.get_scenario_plans("resource", identifier)
             if scenarios:
-                tasks.append(
-                    asyncio.create_task(
-                        self._generate_unit_feature(
-                            "resource", identifier, scenarios
-                        )
-                    )
-                )
+                generation_queue.append(("resource", identifier, scenarios))
 
         for prompt in self._discovery.prompts:
             scenarios = unit_plan.get_scenario_plans("prompt", prompt.name)
             if scenarios:
-                tasks.append(
-                    asyncio.create_task(
-                        self._generate_unit_feature(
-                            "prompt", prompt.name, scenarios
-                        )
-                    )
+                generation_queue.append(("prompt", prompt.name, scenarios))
+
+        for prim_type, prim_name, scenarios in generation_queue:
+            try:
+                result = await self._generate_unit_feature(
+                    prim_type, prim_name, scenarios
                 )
-
-        if integration_plan.integration_scenarios:
-            tasks.append(
-                asyncio.create_task(
-                    self._generate_integration_feature(integration_plan)
-                )
-            )
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        summary = GenerationResult()
-        for result in results:
-            if isinstance(result, Exception):
-                summary.files_failed += 1
-                summary.validation_warnings.append(str(result))
-                logger.error("Feature generation task failed: %s", result)
-            elif isinstance(result, dict):
                 summary.files_generated += 1
                 if result.get("warning"):
                     summary.validation_warnings.append(result["warning"])
+            except Exception as exc:
+                summary.files_failed += 1
+                summary.validation_warnings.append(str(exc))
+                logger.error("Feature generation failed for %s/%s: %s",
+                           prim_type, prim_name, exc)
+
+        if integration_plan.integration_scenarios:
+            try:
+                result = await self._generate_integration_feature(integration_plan)
+                summary.files_generated += 1
+                if result.get("warning"):
+                    summary.validation_warnings.append(result["warning"])
+            except Exception as exc:
+                summary.files_failed += 1
+                summary.validation_warnings.append(str(exc))
+                logger.error("Integration feature generation failed: %s", exc)
+
+        logger.info(
+            "Step reuse tracking: %d unique step patterns collected",
+            len(self._generated_step_patterns)
+        )
 
         return summary
 
@@ -163,6 +165,9 @@ class GherkinFeatureGenerator:
         When the scenario count exceeds MAX_SCENARIOS_PER_BATCH the list is
         split into batches, each sent as an independent LLM call, and the
         resulting Gherkin blocks are merged into a single feature file.
+
+        After generation, extracts step patterns and adds them to the shared
+        step tracking set for reuse in subsequent features.
         """
         async with self._semaphore:
             logger.info("Generating %s unit feature: %s", prim_type, prim_name)
@@ -201,6 +206,14 @@ class GherkinFeatureGenerator:
             if not final.endswith("\n"):
                 final += "\n"
 
+            extracted_steps = self._extract_steps_from_gherkin(final)
+            self._generated_step_patterns.update(extracted_steps)
+            logger.debug(
+                "Extracted %d steps from %s/%s, total tracked: %d",
+                len(extracted_steps), prim_type, prim_name,
+                len(self._generated_step_patterns)
+            )
+
             safe_name = re.sub(r"[^\w]", "_", prim_name).lower()
             filename = f"{prim_type}_{safe_name}.feature"
             filepath = self._output_dir / filename
@@ -235,11 +248,12 @@ class GherkinFeatureGenerator:
                 for s in integration_plan.integration_scenarios
             )
 
-            human_content = Template(INTEGRATION_HUMAN).safe_substitute(
+            base_content = Template(INTEGRATION_HUMAN).safe_substitute(
                 scenarios=scenarios_text,
                 primitives_summary=primitives_summary,
                 code_context=code_context,
             )
+            human_content = self._append_step_reuse_context(base_content)
 
             gherkin_content, warning = await self._generate_and_validate(
                 human_content, "integration"
@@ -265,14 +279,19 @@ class GherkinFeatureGenerator:
         scenarios: list[ScenarioPlan],
         code_context: str,
     ) -> str:
-        """Render the human-message template for a unit-test feature."""
+        """Render the human-message template for a unit-test feature.
+
+        Includes the canonical step library and any already-used steps from
+        previously generated features to encourage step reuse.
+        """
         scenarios_text = "\n".join(f"- {s.scenario}" for s in scenarios)
+        base_content: str
 
         if prim_type == "tool":
             tool = self._discovery.get_tool(prim_name)
             if tool is None:
                 raise ValueError(f"Tool '{prim_name}' not found in discovery result")
-            return Template(TOOL_UNIT_HUMAN).safe_substitute(
+            base_content = Template(TOOL_UNIT_HUMAN).safe_substitute(
                 tool_name=tool.name,
                 scenarios=scenarios_text,
                 tool_description=tool.description or "No description",
@@ -280,13 +299,13 @@ class GherkinFeatureGenerator:
                 code_context=code_context,
             )
 
-        if prim_type == "resource":
+        elif prim_type == "resource":
             resource = self._find_resource(prim_name)
             if resource is None:
                 raise ValueError(
                     f"Resource '{prim_name}' not found in discovery result"
                 )
-            return Template(RESOURCE_UNIT_HUMAN).safe_substitute(
+            base_content = Template(RESOURCE_UNIT_HUMAN).safe_substitute(
                 resource_name=resource.name or resource.uri,
                 scenarios=scenarios_text,
                 resource_uri=resource.uri,
@@ -296,7 +315,7 @@ class GherkinFeatureGenerator:
                 code_context=code_context,
             )
 
-        if prim_type == "prompt":
+        elif prim_type == "prompt":
             prompt_info = self._discovery.get_prompt(prim_name)
             if prompt_info is None:
                 raise ValueError(
@@ -309,7 +328,7 @@ class GherkinFeatureGenerator:
                 )
                 or "none"
             )
-            return Template(PROMPT_UNIT_HUMAN).safe_substitute(
+            base_content = Template(PROMPT_UNIT_HUMAN).safe_substitute(
                 prompt_name=prompt_info.name,
                 scenarios=scenarios_text,
                 prompt_description=prompt_info.description or "No description",
@@ -317,7 +336,23 @@ class GherkinFeatureGenerator:
                 code_context=code_context,
             )
 
-        raise ValueError(f"Unknown primitive type: {prim_type}")
+        else:
+            raise ValueError(f"Unknown primitive type: {prim_type}")
+
+        return self._append_step_reuse_context(base_content)
+
+    def _append_step_reuse_context(self, base_content: str) -> str:
+        """Append canonical step library and used steps to prompt content."""
+        parts = [base_content, CANONICAL_STEP_LIBRARY]
+
+        if self._generated_step_patterns:
+            used_steps_section = (
+                "\n## Already Used Steps (MUST reuse these exact patterns):\n"
+                + "\n".join(f"- {step}" for step in sorted(self._generated_step_patterns))
+            )
+            parts.append(used_steps_section)
+
+        return "\n".join(parts)
 
     # ------------------------------------------------------------------
     # LLM interaction
@@ -576,3 +611,19 @@ class GherkinFeatureGenerator:
             parts.append(f"- **{name}**: (primitive details not found)")
 
         return "\n".join(parts) if parts else "No primitive details available."
+
+    @staticmethod
+    def _extract_steps_from_gherkin(gherkin_text: str) -> set[str]:
+        """Extract step patterns from generated Gherkin for reuse tracking.
+
+        Returns a set of step text strings (without the Given/When/Then keyword)
+        that can be used to inform subsequent feature generation.
+        """
+        steps: set[str] = set()
+        for line in gherkin_text.split("\n"):
+            match = re.match(r"\s*(Given|When|Then|And|But)\s+(.+)", line)
+            if match:
+                step_text = match.group(2).strip()
+                if step_text and not step_text.startswith("|"):
+                    steps.add(step_text)
+        return steps
