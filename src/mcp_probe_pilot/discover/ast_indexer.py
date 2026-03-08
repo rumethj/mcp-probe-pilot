@@ -6,12 +6,13 @@ indexing via SHA-256 file hash change detection.
 """
 
 import ast
+import fnmatch
 import hashlib
 import logging
 from pathlib import Path
 from typing import Optional
 
-from mcp_probe_pilot.core.models.discovery import CodebaseIndex, CodeEntity
+from mcp_probe_pilot.core.models.discover import CodebaseIndex, CodeEntity
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ DEFAULT_EXCLUDE_DIRS: set[str] = {
     "tests_results",
     "test_results",
     "tests_reports",
+    "reports",
+    "*mcp-probe*",
+    "*.log",
 }
 
 DEFAULT_EXCLUDE_FILES: set[str] = {
@@ -135,7 +139,7 @@ class ASTIndexer:
         for py_file in sorted(root.rglob("*.py")):
             should_exclude = False
             for parent in py_file.relative_to(root).parents:
-                if parent.name in self.exclude_dirs:
+                if self._matches_exclude(parent.name, self.exclude_dirs):
                     should_exclude = True
                     break
             if should_exclude:
@@ -144,6 +148,13 @@ class ASTIndexer:
                 continue
             python_files.append(py_file)
         return python_files
+
+    @staticmethod
+    def _matches_exclude(name: str, patterns: set[str]) -> bool:
+        """Check *name* against a set that may contain plain names or glob patterns."""
+        if name in patterns:
+            return True
+        return any(fnmatch.fnmatch(name, p) for p in patterns if "*" in p or "?" in p)
 
     def _parse_file(self, file_path: Path, relative_path: str) -> list[CodeEntity]:
         source = file_path.read_text(encoding="utf-8")

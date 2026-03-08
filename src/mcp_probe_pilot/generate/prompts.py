@@ -36,7 +36,6 @@ CANONICAL_STEP_LIBRARY = """
 - When the MCP Client calls the tool "{tool_name}" with parameters
 - When the MCP Client calls the tool "{tool_name}"
 - When the MCP Client reads the resource "{resource_uri}"
-- When the MCP Client reads the resource "{resource_uri}" with header "{header}"
 - When the MCP Client gets the prompt "{prompt_name}" with arguments
 - When the MCP Client gets the prompt "{prompt_name}"
 - When the MCP Client queries "{query}"
@@ -50,18 +49,21 @@ CANONICAL_STEP_LIBRARY = """
 - Then the response field "{field}" should be "{expected_value}"
 - Then the response field "{field}" should be {expected_value:d}
 - Then the response field "{field}" should be null
-- Then the response field "{field}" should be {json_value}
+- Then the response field "{field}" should be []
+- Then the response field "{field}" should be {json_list}
 - Then the response content type should be "{content_type}"
 - Then the response should be semantically relevant to "{description}"
 - Then the response should contain an error
 - Then the error message should indicate "{expected_message}"
 - Then the response should contain prompt messages
 
-### Integration Workflow Steps (For multi-step workflows)
+### Integration Workflow Assertion Steps (For agentic workflows)
+# These steps verify which MCP primitives were invoked during process_query
+- Then the MCP Client calls the tool "{tool_name}"
 - Then the MCP Client calls the tool "{tool_name}" with parameters
+- Then the MCP Client gets the prompt "{prompt_name}"
 - Then the MCP Client gets the prompt "{prompt_name}" with arguments
-- And the MCP Client calls the tool "{tool_name}" with the result
-- And the MCP Client uses the prompt to call tool "{tool_name}"
+- Then the MCP Client reads the resource "{resource_uri}"
 - And the workflow should complete successfully
 """
 
@@ -119,15 +121,6 @@ Use this format for resource access:
 
 For template resources, include parameter substitution:
   When the MCP Client reads the resource "<uri_with_params>"
-
-For specific header and body, use the following format:
-  When the MCP Client reads the resource "<uri_with_params>" with header "{<header>}"
-  Then the response should be successful
-  And the response content type should be "${mime_type}"
-
-  When the MCP Client reads the resource "<uri_with_params>" with body "{<body>}"
-  Then the response should be successful
-  And the response content type should be "${mime_type}"
 """
 
 PROMPT_UNIT_HUMAN = """\
@@ -229,17 +222,24 @@ ARCHITECTURAL RULES & CONSTRAINTS:
    - For prompt retrieval: `context.response = context.loop.run_until_complete(context.mcp_client.get_prompt(prompt_name, args))`
    - For resource reads: `context.response = context.loop.run_until_complete(context.mcp_client.read_resource(resource_uri))`
 3. Context Management: Assume `context.mcp_client` and `context.loop` are already instantiated. Do not instantiate or close them.
-4. Assertions: Parse `context.response` to perform standard Python `assert` statements.
+4. Assertions: Parse `context.response` to perform standard Python `assert` statements. The response is a string.
 5. Strict Output Format: 
    - Output ONLY valid Python code enclosed in a ```python ... ``` markdown block.
    - No conversational text before or after the code block.
    - The final line of the code MUST be an `# EOF` comment.
 6. Deduplication: Do NOT generate python functions for steps that are ALREADY IMPLEMENTED. Only generate code for steps that are missing.
+7. Parameter Naming: Use consistent parameter names for step patterns to enable pattern matching:
+   - Use `{tool_name}` for tool names
+   - Use `{resource_uri}` for resource URIs
+   - Use `{prompt_name}` for prompt names
+   - Use `{key}` or `{field}` for field/key names
+   - Use `{value}` or `{expected_value}` for expected values
+   - Use `{query}` for query strings
 
 ALREADY IMPLEMENTED STEPS (DO NOT GENERATE THESE):
 ${existing_steps_list}
 
-EXAMPLE:
+EXAMPLE - Basic step with parameters:
 ```python
 from behave import given, when, then
 
@@ -252,6 +252,27 @@ def step_when_user_queries(context, query):
 @then('the response should contain "{expected}"')
 def step_then_response_contains(context, expected):
     assert expected in str(context.response), f"Expected '{expected}' in response: {context.response}"
+# EOF
+```
+
+EXAMPLE - Step with data table:
+```python
+import json
+from behave import when
+
+@when('the MCP Client calls the tool "{tool_name}" with parameters')
+def step_when_call_tool_with_params(context, tool_name):
+    params = {}
+    for row in context.table:
+        value = row["value"]
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            pass
+        params[row["parameter"]] = value
+    context.response = context.loop.run_until_complete(
+        context.mcp_client.call_tool(tool_name, params)
+    )
 # EOF
 ```\
 """
@@ -270,8 +291,10 @@ ${scenario_text}
 ### Instructions:
 1. Generate step implementations ONLY for steps that are NOT in the "ALREADY IMPLEMENTED" list.
 2. Use parameterized step patterns where values are quoted (e.g., `@when('the MCP Client calls the tool "{tool_name}"')`).
-3. For steps with data tables, access them via `context.table`.
-4. Ensure each function has a unique, descriptive name.
+3. For steps with data tables (rows starting with |), access them via `context.table`. Iterate with `for row in context.table`.
+4. Ensure each function has a unique, descriptive name prefixed with `step_`.
 5. Store results in `context.response` so subsequent steps can access them.
-6. End with `# EOF` on the last line.
+6. For assertions, parse `context.response` (which is a string) appropriately - use `json.loads()` if JSON is expected.
+7. End with `# EOF` on the last line.
+8. If all steps are already implemented, output an empty code block with just `# EOF`.
 """

@@ -1,5 +1,5 @@
 from mcp_probe_pilot.core.models.config import ProbeConfig
-from mcp_probe_pilot.core.models.discovery import (
+from mcp_probe_pilot.core.models.discover import (
     CodebaseIndex,
     CodeEntity,
     DiscoveryResult,
@@ -22,6 +22,9 @@ from mcp_probe_pilot.core.models.gherkin_feature import (
     GherkinStepType,
     GherkinScenario,
 )
+from mcp_probe_pilot.core.models.step_implementation import StepImplementationResult
+from mcp_probe_pilot.core.models.execution import TestExecutionResult
+
 __all__ = [
     "ProbeConfig",
     "CodebaseIndex",
@@ -36,4 +39,6 @@ __all__ = [
     "ScenarioPlan",
     "UnitTestPlanResult",
     "IntegrationTestPlanResult",
+    "StepImplementationResult",
+    "TestExecutionResult",
 ]

@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 from mcp_probe_pilot.core.mcp_session import MCPSession
-from mcp_probe_pilot.core.models.discovery import (
+from mcp_probe_pilot.core.models.discover import (
     DiscoveryResult,
     PromptArgument,
     PromptInfo,

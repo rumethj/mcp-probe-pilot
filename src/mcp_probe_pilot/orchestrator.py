@@ -15,28 +15,26 @@ from mcp_probe_pilot.core.models import (
     CodebaseIndex, 
     DiscoveryResult,
     IntegrationTestPlanResult,
-    UnitTestPlanResult
+    UnitTestPlanResult,
+    GherkinFeatureCollection,
+    TestExecutionResult,
+    StepImplementationResult,
 )
-# from mcp_probe_pilot.core.models.discovery import CodebaseIndex, DiscoveryResult
-# from mcp_probe_pilot.core.models.plan import (
-#     IntegrationTestPlanResult,
-#     UnitTestPlanResult,
-# )
 from mcp_probe_pilot.core.llm_client import LLMClient
 from mcp_probe_pilot.core.mcp_session import MCPSession
 from mcp_probe_pilot.core.service_client import MCPProbeServiceClient, ServiceClientError
-from mcp_probe_pilot.discovery.discoverer import MCPDiscoverer
-from mcp_probe_pilot.discovery.ast_indexer import ASTIndexer
+from mcp_probe_pilot.discover.discoverer import MCPDiscoverer
+from mcp_probe_pilot.discover.ast_indexer import ASTIndexer
 from mcp_probe_pilot.generate.gherkin_feature_generator import (
     GenerationResult,
     GherkinFeatureGenerator,
 )
 from mcp_probe_pilot.generate.gherkin_formatter import GherkinFormatter
-# from mcp_probe_pilot.generate.step_implementation_generator import (
-#     StepImplementationGenerator,
-#     StepImplementationResult,
-# )
-from mcp_probe_pilot.core.models.gherkin_feature import GherkinFeatureCollection
+from mcp_probe_pilot.generate.step_implementation_generator import (
+    StepImplementationGenerator,
+)
+
+from mcp_probe_pilot.execute.executor import TestExecutor, ExecutorError
 from mcp_probe_pilot.plan.planner import Planner
 
 logger = logging.getLogger(__name__)
@@ -68,6 +66,12 @@ class MCPProbeOrchestrator:
         # Planning Results
         self.unit_test_plan: UnitTestPlanResult | None = None
         self.integration_test_plan: IntegrationTestPlanResult | None = None
+
+        # Feature Collection (from validation/formatting step)
+        self.feature_collection: GherkinFeatureCollection | None = None
+
+        # Accumulated test dependencies (built up across pipeline stages)
+        self.test_dependencies: list[str] = []
 
 
     @staticmethod
@@ -339,89 +343,148 @@ class MCPProbeOrchestrator:
         )
 
         formatter = GherkinFormatter()
-        collection = formatter.format_directory(features_dir)
+        self.feature_collection = formatter.format_directory(features_dir)
 
         logger.info(
             "Feature file formatting complete: %d features, %d unique steps",
-            len(collection.features),
-            len(collection.get_unique_step_texts()),
+            len(self.feature_collection.features),
+            len(self.feature_collection.get_unique_step_texts()),
         )
 
-        return collection
+        return self.feature_collection
 
     # ------------------------------------------------------------------
-    # Step Implementation Generation (SCAFFOLDING)
+    # Step Implementation Generation
     # ------------------------------------------------------------------
 
-    # async def generate_step_implementations(self) -> StepImplementationResult:
-    #     """Generate step implementations for the feature files.
+    async def generate_step_implementations(self) -> StepImplementationResult:
+        """Generate step implementations for the feature files.
 
-    #     Processes feature files sequentially, scenarios within each feature in parallel.
-    #     Fetches prebuilt step definitions from mcp-probe-service and generates
-    #     implementations for missing steps.
+        Processes each scenario sequentially, generating missing step
+        implementations via LLM and appending them to the prebuilt steps.py.
 
-    #     Raises:
-    #         OrchestratorError: If no feature files exist.
-    #     """
-    #     output_dir = self.repository_root / "features"
-    #     feature_files = list(output_dir.glob("*.feature"))
+        Raises:
+            OrchestratorError: If feature collection is not available or
+                prebuilts cannot be fetched.
+        """
+        if self.feature_collection is None:
+            raise OrchestratorError(
+                "No feature collection available. "
+                "Run validate_and_format_feature_files() first."
+            )
 
-    #     if not feature_files:
-    #         raise OrchestratorError(
-    #             "No feature files found. Run generate_feature_files() first."
-    #         )
+        output_dir = self.repository_root / "features"
 
-    #     logger.info(
-    #         "Found %d feature files for step implementation", len(feature_files)
-    #     )
+        logger.info(
+            "Generating step implementations for %d features with %d unique steps",
+            len(self.feature_collection.features),
+            len(self.feature_collection.get_unique_step_texts()),
+        )
 
-    #     try:
-    #         async with MCPProbeServiceClient(
-    #             base_url=self.config.service_url
-    #         ) as service:
-    #             written_files = await service.download_prebuilts(output_dir)
-    #             logger.info(
-    #                 "Downloaded %d prebuilt files to %s",
-    #                 len(written_files),
-    #                 output_dir,
-    #             )
+        try:
+            async with MCPProbeServiceClient(
+                base_url=self.config.service_url
+            ) as service:
+                written_files = await service.download_prebuilts(output_dir)
+                logger.info(
+                    "Downloaded %d prebuilt files to %s",
+                    len(written_files),
+                    output_dir,
+                )
 
-    #             prebuilt_files = await service.get_prebuilts()
-    #     except ServiceClientError as exc:
-    #         raise OrchestratorError(
-    #             f"Failed to fetch prebuilts from service: {exc}"
-    #         ) from exc
+                prebuilt_data = await service.get_prebuilts()
+        except ServiceClientError as exc:
+            raise OrchestratorError(
+                f"Failed to fetch prebuilts from service: {exc}"
+            ) from exc
 
-    #     steps_code = next(
-    #         (
-    #             f["content"]
-    #             for f in prebuilt_files
-    #             if f["path"].endswith("steps.py")
-    #         ),
-    #         "",
-    #     )
+        prebuilt_files = prebuilt_data.get("files", [])
+        self.test_dependencies = list(
+            dict.fromkeys(prebuilt_data.get("dependencies", []))
+        )
+        logger.info(
+            "Loaded %d prebuilt dependencies: %s",
+            len(self.test_dependencies),
+            self.test_dependencies,
+        )
 
-    #     if not steps_code:
-    #         logger.warning("No prebuilt steps.py found, starting from scratch")
+        steps_code = next(
+            (
+                f["content"]
+                for f in prebuilt_files
+                if f["path"].endswith("steps.py")
+            ),
+            "",
+        )
 
-    #     with LLMClient() as llm:
-    #         result = None
-    #     #     generator = StepImplementationGenerator(
-    #     #         llm=llm,
-    #     #         output_dir=output_dir,
-    #     #         prebuilt_steps_code=steps_code,
-    #     #     )
-    #     #     result = await generator.generate_all(feature_files)
+        if not steps_code:
+            logger.warning("No prebuilt steps.py found, starting from scratch")
 
-    #     # logger.info(
-    #     #     "Step implementation complete: %d generated, %d skipped, %d errors",
-    #     #     result.steps_generated,
-    #     #     result.steps_skipped,
-    #     #     len(result.validation_errors),
-    #     # )
+        with LLMClient() as llm:
+            generator = StepImplementationGenerator(
+                llm=llm,
+                prebuilt_steps_code=steps_code,
+                output_dir=output_dir,
+            )
+            result = await generator.generate_all(self.feature_collection)
 
-    #     # if result.validation_errors:
-    #     #     for error in result.validation_errors:
-    #     #         logger.warning("Validation error: %s", error)
+        if result.discovered_dependencies:
+            new_deps = [
+                d for d in result.discovered_dependencies
+                if d not in self.test_dependencies
+            ]
+            self.test_dependencies.extend(new_deps)
+            logger.info("Added %d step-generation dependencies: %s", len(new_deps), new_deps)
 
-    #     return result
+        logger.info(
+            "Step implementation complete: %d generated, %d skipped, %d errors",
+            result.steps_generated,
+            result.steps_skipped,
+            len(result.validation_errors),
+        )
+
+        if result.validation_errors:
+            for error in result.validation_errors:
+                logger.warning("Validation error: %s", error)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # Test Execution
+    # ------------------------------------------------------------------
+
+    def run_tests(self) -> TestExecutionResult:
+        """Set up a test venv, install accumulated dependencies, and run behave.
+
+        Dependencies are collected from earlier pipeline stages:
+        - Prebuilt dependencies (fetched during step implementation generation)
+        - Discovered dependencies (from step implementation results)
+        - Future: healer-discovered dependencies
+
+        Raises:
+            OrchestratorError: If the test environment cannot be set up or
+                the features directory is missing.
+        """
+        if not self.test_dependencies:
+            logger.warning(
+                "No test dependencies accumulated. "
+                "Was generate_step_implementations() run?"
+            )
+
+        logger.info(
+            "Running tests with %d dependencies: %s",
+            len(self.test_dependencies),
+            self.test_dependencies,
+        )
+
+        try:
+            executor = TestExecutor(
+                repo_root=self.repository_root,
+                dependencies=self.test_dependencies,
+            )
+            executor.setup_environment()
+            return executor.run_tests()
+        except ExecutorError as exc:
+            raise OrchestratorError(
+                f"Test execution failed: {exc}"
+            ) from exc

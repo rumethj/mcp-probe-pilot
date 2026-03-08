@@ -182,16 +182,23 @@ class MCPProbeServiceClient:
     # Prebuilts
     # ------------------------------------------------------------------
 
-    async def get_prebuilts(self) -> list[dict[str, str]]:
-        """Fetch all prebuilt scaffolding files from the service."""
+    async def get_prebuilts(self) -> dict[str, Any]:
+        """Fetch prebuilt scaffolding files and their dependencies.
+
+        Returns the full response dict with ``files`` and ``dependencies`` keys.
+        """
         try:
             response = await self.client.get("/api/prebuilts")
-            data = await self._handle_response(response)
-            return data.get("files", [])
+            return await self._handle_response(response)
         except httpx.ConnectError as exc:
             raise ServiceConnectionError(
                 f"Unable to connect to service: {exc}"
             ) from exc
+
+    async def get_prebuilt_dependencies(self) -> list[str]:
+        """Fetch the pip dependency list required by prebuilt scaffolding."""
+        data = await self.get_prebuilts()
+        return data.get("dependencies", [])
 
     async def download_prebuilts(self, target_dir: Path) -> list[Path]:
         """Fetch prebuilt files and write them into *target_dir*.
@@ -201,7 +208,8 @@ class MCPProbeServiceClient:
 
         Returns the list of paths that were written.
         """
-        files = await self.get_prebuilts()
+        data = await self.get_prebuilts()
+        files = data.get("files", [])
         written: list[Path] = []
         for entry in files:
             dest = target_dir / entry["path"]

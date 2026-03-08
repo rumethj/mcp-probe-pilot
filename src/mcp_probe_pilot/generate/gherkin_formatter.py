@@ -163,6 +163,7 @@ class GherkinParser:
         for step_data in steps_data:
             keyword = step_data.get("keyword", "").strip()
             text = step_data.get("text", "").strip()
+            text = re.sub(r"\s*\|\s*$", "", text)
 
             # Determine step type - "And" and "*" inherit from previous
             if keyword in ("Given", "given"):
