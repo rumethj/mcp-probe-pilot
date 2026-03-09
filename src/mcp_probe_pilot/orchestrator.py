@@ -12,13 +12,15 @@ from pydantic import ValidationError
 
 from mcp_probe_pilot.core.models import (
     ProbeConfig,
-    CodebaseIndex, 
+    CodebaseIndex,
     DiscoveryResult,
     IntegrationTestPlanResult,
     UnitTestPlanResult,
     GherkinFeatureCollection,
     TestExecutionResult,
     StepImplementationResult,
+    EvaluationResults,
+    HealResult,
 )
 from mcp_probe_pilot.core.llm_client import LLMClient
 from mcp_probe_pilot.core.mcp_session import MCPSession
@@ -35,6 +37,8 @@ from mcp_probe_pilot.generate.step_implementation_generator import (
 )
 
 from mcp_probe_pilot.execute.executor import TestExecutor, ExecutorError
+from mcp_probe_pilot.evaluate.evaluator import TestEvaluator
+from mcp_probe_pilot.heal.healer import TestHealer
 from mcp_probe_pilot.plan.planner import Planner
 
 logger = logging.getLogger(__name__)
@@ -488,3 +492,80 @@ class MCPProbeOrchestrator:
             raise OrchestratorError(
                 f"Test execution failed: {exc}"
             ) from exc
+
+    # ------------------------------------------------------------------
+    # Test Healing
+    # ------------------------------------------------------------------
+
+    def repopulate_features(self) -> GherkinFeatureCollection:
+        """Re-parse .feature files from disk into the feature collection.
+
+        Called at the start of each healing iteration because the Healer
+        (or a previous normalization pass) may have modified feature files.
+        """
+        features_dir = self.repository_root / "features"
+
+        formatter = GherkinFormatter()
+        self.feature_collection = formatter.format_directory(features_dir)
+
+        logger.info(
+            "Repopulated feature collection: %d features, %d unique steps",
+            len(self.feature_collection.features),
+            len(self.feature_collection.get_unique_step_texts()),
+        )
+        return self.feature_collection
+
+    def _read_steps_code(self) -> str:
+        """Read the current steps.py from disk."""
+        steps_file = self.repository_root / "features" / "steps" / "steps.py"
+        if not steps_file.exists():
+            logger.warning("steps.py not found at %s", steps_file)
+            return ""
+        return steps_file.read_text(encoding="utf-8")
+
+    async def evaluate_tests(
+        self,
+        execution_result: TestExecutionResult,
+    ) -> EvaluationResults:
+        """Parse test results and classify failures via LLM.
+
+        Raises:
+            OrchestratorError: If feature collection is not available.
+        """
+        if self.feature_collection is None:
+            raise OrchestratorError(
+                "No feature collection available. "
+                "Run repopulate_features() first."
+            )
+
+        steps_code = self._read_steps_code()
+
+        async with MCPProbeServiceClient(
+            base_url=self.config.service_url
+        ) as service:
+            with LLMClient() as llm:
+                evaluator = TestEvaluator(llm=llm, service_client=service)
+                evaluation = evaluator.parse_results(
+                    execution_result, self.feature_collection
+                )
+                evaluation = await evaluator.classify_verdicts(
+                    evaluation, steps_code
+                )
+
+        logger.info(
+            "Evaluation: %d false negatives, %d true negatives, %d succeeded",
+            len(evaluation.false_negatives),
+            len(evaluation.true_negatives),
+            len(evaluation.succeeded),
+        )
+        return evaluation
+
+    async def heal_tests(
+        self,
+        execution_result: TestExecutionResult,
+    ) -> HealResult:
+        
+
+        return heal_result
+
+    

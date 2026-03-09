@@ -73,7 +73,7 @@ def main(
 
     console.print(
         Panel(
-            f"[bold cyan]MCP-Probe Configuration Loaded[/bold cyan]\n\n"
+            f"[bold red]MCP-Probe Configuration Loaded[/bold red]\n\n"
             f"[bold]Server Command:[/bold] [dim]{orchestrator.get_server_command()}[/dim]\n"
             f"[bold]Transport:[/bold]      {orchestrator.get_transport()}\n"
             f"[bold]Service URL:[/bold]    {orchestrator.get_service_url()}\n"
@@ -160,13 +160,21 @@ def main(
                 start_time = time.time()
                 result = orchestrator.run_unit_test_planning()
                 elapsed = format_elapsed_time(time.time() - start_time)
-                scenario_plans_str = '\n'.join([f'{value}' for value in result.scenario_plans])
-                console.print(
+
+                # Build the base success message
+                msg = (
                     f"[green]✓ \\[Test Generation 1/6][/green] Unit Test Planning complete! "
                     f"Planned {result.num_scenarios} scenarios. "
                     f"[dim](Ran in {elapsed})[/dim]"
-                    f"Scenario plans: {scenario_plans_str}"
                 )
+                
+                # Append debug info conditionally
+                if debug:
+                    scenario_plans_str = '\n'.join(str(val) for val in result.scenario_plans)
+                    msg += f"\nScenario plans:\n{scenario_plans_str}"
+                
+                console.print(msg)
+                
             except Exception as exc:
                 console.print(f"[red]✗[/red] Unit Test Planning failed: {exc}")
                 raise typer.Exit(code=1)
@@ -180,13 +188,20 @@ def main(
                 start_time = time.time()
                 result = orchestrator.run_integration_test_planning()
                 elapsed = format_elapsed_time(time.time() - start_time)
-                scenario_plans_str = '\n'.join([f'{value}' for value in result.scenario_plans])
-                console.print(
+                
+                # Build the base success message
+                msg = (
                     f"[green]✓ \\[Test Generation 2/6][/green] Integration Test Planning complete! "
                     f"Generated {result.num_scenarios} scenarios. "
                     f"[dim](Ran in {elapsed})[/dim]"
-                    f"Scenario plans: {scenario_plans_str}"
                 )
+                
+                # Append debug info conditionally
+                if debug:
+                    scenario_plans_str = '\n'.join(str(val) for val in result.scenario_plans)
+                    msg += f"\nScenario plans:\n{scenario_plans_str}"
+                
+                console.print(msg)
             except Exception as exc:
                 console.print(f"[red]✗[/red] Integration Test Planning failed: {exc}")
                 raise typer.Exit(code=1)
@@ -249,35 +264,125 @@ def main(
                 console.print(f"[red]✗[/red] Step Implementations generation failed: {exc}")
                 raise typer.Exit(code=1)
 
-        # Step 2.6: Test Execution
-        with console.status(
-            "[bold blue]    Executing Tests[/bold blue]",
-            spinner="line",
-        ):
-            try:
-                start_time = time.time()
-                result = orchestrator.run_tests()
-                elapsed = format_elapsed_time(time.time() - start_time)
-                if result.success:
-                    console.print(
-                        f"[green]✓ \\[Test Generation 6/6][/green] Tests executed! "
-                        f"{result.passed}/{result.total_scenarios} passed. "
-                        f"[dim](Ran in {elapsed})[/dim]"
-                    )
-                else:
-                    console.print(
-                        f"[yellow]⚠ \\[Test Generation 6/6][/yellow] Tests executed with failures: "
-                        f"{result.passed} passed, {result.failed} failed, "
-                        f"{result.errored} errored, {result.skipped} skipped "
-                        f"({result.total_scenarios} total). "
-                        f"[dim](Ran in {elapsed})[/dim]"
-                    )
-                if result.output_file:
-                    console.print(f"  [dim]Results: {result.output_file}[/dim]")
-            except Exception as exc:
-                console.print(f"[red]✗[/red] Test execution failed: {exc}")
-                raise typer.Exit(code=1)
+        # Step 2.6: Test Execution, Evaluation, and Healing Loop
+        MAX_HEAL_ITERATIONS = 5
+        iteration = 0
+        test_result = None
 
+        while iteration < MAX_HEAL_ITERATIONS:
+            # --- Execute ---
+            with console.status(
+                f"[bold blue]    \\[Heal Loop {iteration + 1}/{MAX_HEAL_ITERATIONS}] Executing Tests[/bold blue]",
+                spinner="line",
+            ):
+                try:
+                    start_time = time.time()
+                    test_result = orchestrator.run_tests()
+                    elapsed = format_elapsed_time(time.time() - start_time)
+                    if test_result.success:
+                        console.print(
+                            f"[green]✓ \\[Test Generation 6/6][/green] All tests passed! "
+                            f"{test_result.passed}/{test_result.total_scenarios} passed. "
+                            f"[dim](Ran in {elapsed})[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"[yellow]⚠ \\[Test Generation 6/6][/yellow] Tests executed with failures: "
+                            f"{test_result.passed} passed, {test_result.failed} failed, "
+                            f"{test_result.errored} errored, {test_result.skipped} skipped "
+                            f"({test_result.total_scenarios} total). "
+                            f"[dim](Ran in {elapsed})[/dim]"
+                        )
+                    if test_result.output_file:
+                        console.print(f"  [dim]Results: {test_result.output_file}[/dim]")
+                except Exception as exc:
+                    console.print(f"[red]✗[/red] Test execution failed: {exc}")
+                    raise typer.Exit(code=1)
+
+            if test_result.success:
+                break
+
+            # --- Crash path: no JSON report produced ---
+            if not test_result.raw_json:
+                console.print(
+                    f"[yellow]  \\[Heal Loop {iteration + 1}/{MAX_HEAL_ITERATIONS}] "
+                    f"Test runner crashed (no JSON report). Attempting crash-heal...[/yellow]"
+                )
+                try:
+                    start_time = time.time()
+                    asyncio.run(orchestrator.heal_crash(test_result))
+                    elapsed = format_elapsed_time(time.time() - start_time)
+                    console.print(
+                        f"[cyan]  \\[Crash-Heal][/cyan] "
+                        f"Crash-heal applied. [dim](Ran in {elapsed})[/dim]"
+                    )
+                except Exception as exc:
+                    console.print(f"[red]✗[/red] Crash-heal failed: {exc}")
+                    raise typer.Exit(code=1)
+
+                iteration += 1
+                continue
+
+            # --- Normal path: JSON report exists ---
+
+            # Repopulate features (may have changed from prior healing)
+            orchestrator.repopulate_features()
+
+            # --- Evaluate ---
+            with console.status(
+                f"[bold blue]    \\[Heal Loop {iteration + 1}/{MAX_HEAL_ITERATIONS}] Evaluating Test Failures[/bold blue]",
+                spinner="line",
+            ):
+                try:
+                    start_time = time.time()
+                    eval_result = asyncio.run(orchestrator.evaluate_tests(test_result))
+                    elapsed = format_elapsed_time(time.time() - start_time)
+                    console.print(
+                        f"[cyan]  \\[Evaluation][/cyan] "
+                        f"{len(eval_result.true_negatives)} SUT bugs (true negatives), "
+                        f"{len(eval_result.false_negatives)} test bugs (false negatives). "
+                        f"[dim](Ran in {elapsed})[/dim]"
+                    )
+                    for v in eval_result.true_negatives:
+                        console.print(
+                            f"    [yellow]SUT Bug:[/yellow] {v.step.text} — {v.failure_logs}"
+                        )
+                    for v in eval_result.false_negatives:
+                        console.print(
+                            f"    [blue]Test Bug:[/blue] {v.step.text} — {v.failure_logs}"
+                        )
+                except Exception as exc:
+                    console.print(f"[red]✗[/red] Test evaluation failed: {exc}")
+                    raise typer.Exit(code=1)
+
+            if len(eval_result.false_negatives) == 0:
+                console.print(
+                    "[yellow]  Only SUT bugs remain (true negatives). "
+                    "No further healing possible.[/yellow]"
+                )
+                break
+
+            # --- Heal ---
+            with console.status(
+                f"[bold blue]    \\[Heal Loop {iteration + 1}/{MAX_HEAL_ITERATIONS}] Healing Test Implementation[/bold blue]",
+                spinner="line",
+            ):
+                try:
+                    start_time = time.time()
+                    heal_result = asyncio.run(
+                        orchestrator.heal_tests(test_result)
+                    )
+                    elapsed = format_elapsed_time(time.time() - start_time)
+                except Exception as exc:
+                    console.print(f"[red]✗[/red] Test healing failed: {exc}")
+                    raise typer.Exit(code=1)
+
+            iteration += 1
+        else:
+            console.print(
+                f"[yellow]⚠ Max heal iterations ({MAX_HEAL_ITERATIONS}) reached. "
+                f"Some test failures may remain.[/yellow]"
+            )
 
     
 

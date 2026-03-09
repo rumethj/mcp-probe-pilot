@@ -24,6 +24,8 @@ from mcp_probe_pilot.core.models.gherkin_feature import (
 )
 from mcp_probe_pilot.core.models.step_implementation import StepImplementationResult
 from mcp_probe_pilot.core.models.execution import TestExecutionResult
+from mcp_probe_pilot.core.models.evaluation import EvaluationResults, StepVerdict
+from mcp_probe_pilot.core.models.healing import HealResult
 
 __all__ = [
     "ProbeConfig",
@@ -41,4 +43,7 @@ __all__ = [
     "IntegrationTestPlanResult",
     "StepImplementationResult",
     "TestExecutionResult",
+    "EvaluationResults",
+    "StepVerdict",
+    "HealResult",
 ]

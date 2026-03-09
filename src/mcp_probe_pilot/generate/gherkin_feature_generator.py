@@ -408,14 +408,20 @@ class GherkinFeatureGenerator:
 
             parts: list[str] = []
             for r in results:
+                if isinstance(r, str):
+                    parts.append(f"```\n{r}\n```")
+                    continue
+                if not isinstance(r, dict):
+                    continue
                 lines = [
                     f"### {r.get('entity_type', 'code')}: "
                     f"{r.get('name', 'unknown')}"
                 ]
                 if r.get("file_path"):
                     lines.append(f"File: {r['file_path']}")
-                if r.get("code"):
-                    lines.append(f"```\n{r['code']}\n```")
+                code_text = r.get("code", r.get("document", r.get("text", "")))
+                if code_text:
+                    lines.append(f"```\n{code_text}\n```")
                 parts.append("\n".join(lines))
 
             return "\n\n".join(parts)
