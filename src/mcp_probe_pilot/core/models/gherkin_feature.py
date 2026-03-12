@@ -59,20 +59,23 @@ class GherkinScenario(BaseModel):
 
     name: str
     tags: Optional[List[str]] = None
-    given_steps: List[GherkinStep] = Field(default_factory=list)
-    when_steps: List[GherkinStep] = Field(default_factory=list)
-    then_steps: List[GherkinStep] = Field(default_factory=list)
+    steps: List[GherkinStep] = Field(default_factory=list)
+
+    @property
+    def given_steps(self) -> List[GherkinStep]:
+        return [s for s in self.steps if s.step_type == GherkinStepType.GIVEN]
+
+    @property
+    def when_steps(self) -> List[GherkinStep]:
+        return [s for s in self.steps if s.step_type == GherkinStepType.WHEN]
+
+    @property
+    def then_steps(self) -> List[GherkinStep]:
+        return [s for s in self.steps if s.step_type == GherkinStepType.THEN]
 
     def get_all_steps(self) -> List[GherkinStep]:
-        """Utility to sequentially combine steps for file writing."""
-        steps = []
-        if self.given_steps:
-            steps.extend(self.given_steps)
-        if self.when_steps:
-            steps.extend(self.when_steps)
-        if self.then_steps:
-            steps.extend(self.then_steps)
-        return steps
+        """Return steps in their original insertion order."""
+        return list(self.steps)
 
 
 class GherkinFeature(BaseModel):

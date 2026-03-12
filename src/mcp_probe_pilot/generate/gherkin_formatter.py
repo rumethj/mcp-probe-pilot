@@ -50,6 +50,9 @@ NORMALIZATION_RULES: list[tuple[str, str]] = [
     (r'the response "([^"]+)" should be', r'the response field "\1" should be'),
     # Error message variations
     (r"the error should indicate", "the error message should indicate"),
+    # Unquoted boolean values
+    (r'with value True\b', 'with value "True"'),
+    (r'with value False\b', 'with value "False"'),
 ]
 
 # Data table header normalization
@@ -123,36 +126,18 @@ class GherkinParser:
         """Convert a scenario from gherkin AST to GherkinScenario model."""
         name = scenario_data.get("name", "")
 
-        # Determine if it's an outline
-        keyword = scenario_data.get("keyword", "").strip()
-        scenario_type = "outline" if "Outline" in keyword else "scenario"
-
         # Extract tags
         tags = [
             tag["name"].lstrip("@") for tag in scenario_data.get("tags", [])
         ]
 
-        # Parse steps
+        # Parse steps — preserve original interleaved order
         steps = self._convert_steps(scenario_data.get("steps", []))
-
-        # Separate steps by type
-        given_steps = [s for s in steps if s.step_type == GherkinStepType.GIVEN]
-        when_steps = [s for s in steps if s.step_type == GherkinStepType.WHEN]
-        then_steps = [s for s in steps if s.step_type == GherkinStepType.THEN]
-
-        # Parse examples (for Scenario Outline)
-        examples = None
-        if "examples" in scenario_data and scenario_data["examples"]:
-            examples = self._convert_examples(scenario_data["examples"])
 
         return GherkinScenario(
             name=name,
-            type=scenario_type,
             tags=tags if tags else None,
-            given_steps=given_steps,
-            when_steps=when_steps,
-            then_steps=then_steps,
-            examples=examples,
+            steps=steps,
         )
 
     def _convert_steps(self, steps_data: list[dict]) -> list[GherkinStep]:
@@ -172,7 +157,17 @@ class GherkinParser:
                 current_type = GherkinStepType.WHEN
             elif keyword in ("Then", "then"):
                 current_type = GherkinStepType.THEN
-            # "And", "But", "*" keep the current_type
+            elif keyword in ("And", "But", "*"):
+                # Fix "And Then ..." / "And When ..." / "And Given ..." corruption
+                for prefix, stype in [
+                    ("Then ", GherkinStepType.THEN),
+                    ("When ", GherkinStepType.WHEN),
+                    ("Given ", GherkinStepType.GIVEN),
+                ]:
+                    if text.startswith(prefix):
+                        text = text[len(prefix):]
+                        current_type = stype
+                        break
 
             # Parse data table if present
             data_table = None
@@ -237,6 +232,9 @@ class GherkinParser:
         return result if result else None
 
 
+_CURLY_VAR_RE = re.compile(r"^\{(\w+)\}$")
+
+
 class StepNormalizer:
     """Normalizes step text to canonical forms."""
 
@@ -266,6 +264,40 @@ class StepNormalizer:
             result = pattern.sub(replacement, result)
         return result
 
+    @staticmethod
+    def _fixup_saved_param_table(step: GherkinStep) -> None:
+        """Convert ``with parameters`` tables containing {var} literals
+        to ``with saved parameters`` tables with the ``saved_variable`` column.
+
+        Mutates *step* in place. Only acts when the step text ends with
+        ``with parameters`` and at least one table cell is a ``{name}`` reference.
+        """
+        if not step.data_table or not step.text.endswith("with parameters"):
+            return
+
+        dt = step.data_table
+        if "value" not in dt.headers:
+            return
+
+        val_idx = dt.headers.index("value")
+        has_var = any(
+            _CURLY_VAR_RE.match(row[val_idx]) for row in dt.rows
+        )
+        if not has_var:
+            return
+
+        # Convert step text: "with parameters" -> "with saved parameters"
+        step.text = step.text[: -len("with parameters")] + "with saved parameters"
+
+        # Rename header
+        dt.headers[val_idx] = "saved_variable"
+
+        # Strip braces from variable references; leave literals as-is
+        for row in dt.rows:
+            m = _CURLY_VAR_RE.match(row[val_idx])
+            if m:
+                row[val_idx] = m.group(1)
+
     def normalize_step(self, step: GherkinStep) -> None:
         """Normalize a single step (mutates in place)."""
         # Normalize step text
@@ -276,6 +308,9 @@ class StepNormalizer:
             step.data_table.headers = [
                 self.normalize_table_header(h) for h in step.data_table.headers
             ]
+
+        # Convert {variable} literals in "with parameters" to "with saved parameters"
+        self._fixup_saved_param_table(step)
 
 
 class GherkinFormatter:

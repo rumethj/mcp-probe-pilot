@@ -7,6 +7,7 @@ that requires communication with an MCP server over stdio.
 
 import asyncio
 import shlex
+from io import TextIOBase
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,7 @@ class MCPSession:
         env: dict[str, str] | None = None,
         timeout: float = 30.0,
         cwd: str | Path | None = None,
+        errlog: TextIOBase | Any | None = None,
     ) -> None:
         parsed = shlex.split(server_command)
         self._command = parsed[0]
@@ -63,6 +65,7 @@ class MCPSession:
         self._env = env
         self._timeout = timeout
         self._cwd = cwd
+        self._errlog = errlog
 
         self._stdio_ctx: Any | None = None
         self._session_ctx: Any | None = None
@@ -91,7 +94,10 @@ class MCPSession:
                 cwd=self._cwd,
             )
 
-            self._stdio_ctx = stdio_client(params)
+            stdio_kwargs: dict[str, Any] = {}
+            if self._errlog is not None:
+                stdio_kwargs["errlog"] = self._errlog
+            self._stdio_ctx = stdio_client(params, **stdio_kwargs)
             read, write = await asyncio.wait_for(
                 self._stdio_ctx.__aenter__(),
                 timeout=self._timeout,

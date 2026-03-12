@@ -15,7 +15,7 @@ import logging
 import re
 from pathlib import Path
 from string import Template
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from gherkin.parser import Parser as GherkinParser
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -90,12 +90,17 @@ class GherkinFeatureGenerator:
         self,
         unit_plan: UnitTestPlanResult,
         integration_plan: IntegrationTestPlanResult,
+        on_progress: Callable[[str, str, str], None] | None = None,
     ) -> GenerationResult:
         """Generate all feature files sequentially to enable step reuse tracking.
 
         Features are processed one at a time so that steps extracted from each
         generated feature can be propagated to subsequent features, encouraging
         the LLM to reuse the same step patterns.
+
+        Args:
+            on_progress: Optional callback invoked with (event, prim_type, prim_name)
+                where event is ``"start"``, ``"done"``, or ``"failed"``.
         """
         self._output_dir.mkdir(parents=True, exist_ok=True)
         summary = GenerationResult()
@@ -119,6 +124,8 @@ class GherkinFeatureGenerator:
                 generation_queue.append(("prompt", prompt.name, scenarios))
 
         for prim_type, prim_name, scenarios in generation_queue:
+            if on_progress:
+                on_progress("start", prim_type, prim_name)
             try:
                 result = await self._generate_unit_feature(
                     prim_type, prim_name, scenarios
@@ -126,22 +133,32 @@ class GherkinFeatureGenerator:
                 summary.files_generated += 1
                 if result.get("warning"):
                     summary.validation_warnings.append(result["warning"])
+                if on_progress:
+                    on_progress("done", prim_type, prim_name)
             except Exception as exc:
                 summary.files_failed += 1
                 summary.validation_warnings.append(str(exc))
                 logger.error("Feature generation failed for %s/%s: %s",
                            prim_type, prim_name, exc)
+                if on_progress:
+                    on_progress("failed", prim_type, prim_name)
 
         if integration_plan.integration_scenarios:
+            if on_progress:
+                on_progress("start", "integration", "integration_workflows")
             try:
                 result = await self._generate_integration_feature(integration_plan)
                 summary.files_generated += 1
                 if result.get("warning"):
                     summary.validation_warnings.append(result["warning"])
+                if on_progress:
+                    on_progress("done", "integration", "integration_workflows")
             except Exception as exc:
                 summary.files_failed += 1
                 summary.validation_warnings.append(str(exc))
                 logger.error("Integration feature generation failed: %s", exc)
+                if on_progress:
+                    on_progress("failed", "integration", "integration_workflows")
 
         logger.info(
             "Step reuse tracking: %d unique step patterns collected",
@@ -291,11 +308,13 @@ class GherkinFeatureGenerator:
             tool = self._discovery.get_tool(prim_name)
             if tool is None:
                 raise ValueError(f"Tool '{prim_name}' not found in discovery result")
+            schema_hints = self._extract_schema_hints(tool.input_schema or {})
             base_content = Template(TOOL_UNIT_HUMAN).safe_substitute(
                 tool_name=tool.name,
                 scenarios=scenarios_text,
                 tool_description=tool.description or "No description",
                 input_schema=json.dumps(tool.input_schema, indent=2),
+                schema_hints=schema_hints,
                 code_context=code_context,
             )
 
@@ -340,6 +359,28 @@ class GherkinFeatureGenerator:
             raise ValueError(f"Unknown primitive type: {prim_type}")
 
         return self._append_step_reuse_context(base_content)
+
+    @staticmethod
+    def _extract_schema_hints(input_schema: dict) -> str:
+        """Extract enum/default/pattern/examples from JSON schema properties."""
+        hints: list[str] = []
+        for prop, spec in input_schema.get("properties", {}).items():
+            if not isinstance(spec, dict):
+                continue
+            parts: list[str] = []
+            if "enum" in spec:
+                parts.append(f"valid values: {spec['enum']}")
+            if "default" in spec:
+                parts.append(f"default: {spec['default']}")
+            if "pattern" in spec:
+                parts.append(f"format: {spec['pattern']}")
+            if "examples" in spec:
+                parts.append(f"examples: {spec['examples']}")
+            if parts:
+                hints.append(f"  - {prop}: {', '.join(parts)}")
+        if not hints:
+            return ""
+        return "## Parameter Constraints\n" + "\n".join(hints)
 
     def _append_step_reuse_context(self, base_content: str) -> str:
         """Append canonical step library and used steps to prompt content."""
@@ -400,14 +441,34 @@ class GherkinFeatureGenerator:
     # ------------------------------------------------------------------
 
     async def _query_code_context(self, query: str) -> str:
-        """Query ChromaDB for relevant source code snippets."""
+        """Query ChromaDB for relevant source code snippets.
+
+        Makes multiple queries to ensure the LLM sees not only the
+        primitive implementation but also seed/fixture data and
+        validation/error-handling logic from the same codebase.
+        """
+        queries = [
+            query,
+            f"{query} seed data initial state fixtures",
+            f"{query} validation error handling",
+        ]
+
         try:
-            results = await self._service_client.query_codebase(query)
-            if not results:
+            seen_names: set[str] = set()
+            all_results: list = []
+            for q in queries:
+                results = await self._service_client.query_codebase(q, n_results=5)
+                for r in results:
+                    name = r.get("name", "") if isinstance(r, dict) else str(r)
+                    if name not in seen_names:
+                        seen_names.add(name)
+                        all_results.append(r)
+
+            if not all_results:
                 return "No relevant source code found."
 
             parts: list[str] = []
-            for r in results:
+            for r in all_results:
                 if isinstance(r, str):
                     parts.append(f"```\n{r}\n```")
                     continue
@@ -455,6 +516,13 @@ class GherkinFeatureGenerator:
             raise GherkinGenerationError(
                 f"{label}: Gherkin syntax validation failed"
             )
+
+        ref_warnings = self._validate_primitive_references(gherkin_content)
+        if ref_warnings:
+            ref_msg = "; ".join(ref_warnings)
+            logger.warning("[%s] Primitive reference issues: %s", label, ref_msg)
+            warning = f"{warning}; {ref_msg}" if warning else ref_msg
+            gherkin_content = self._strip_invalid_scenarios(gherkin_content)
 
         if not gherkin_content.endswith("\n"):
             gherkin_content += "\n"
@@ -517,6 +585,95 @@ class GherkinFeatureGenerator:
         except Exception as exc:
             logger.warning("Gherkin parse error: %s", exc)
             return False
+
+    _TOOL_REF_RE = re.compile(r'calls the tool "([^"]+)"')
+    _RESOURCE_REF_RE = re.compile(r'reads the resource "([^"]+)"')
+    _PROMPT_REF_RE = re.compile(r'gets the prompt "([^"]+)"')
+
+    def _validate_primitive_references(self, gherkin_content: str) -> list[str]:
+        """Check that tool/resource/prompt names in the Gherkin exist in discovery.
+
+        Returns a list of warning strings (empty when all references are valid).
+        """
+        warnings: list[str] = []
+
+        known_tools = {t.name for t in self._discovery.tools}
+        for m in self._TOOL_REF_RE.finditer(gherkin_content):
+            if m.group(1) not in known_tools:
+                warnings.append(f"Unknown tool '{m.group(1)}'")
+
+        known_resources = {r.uri for r in self._discovery.resources}
+        known_resources |= {r.name for r in self._discovery.resources if r.name}
+        for m in self._RESOURCE_REF_RE.finditer(gherkin_content):
+            if m.group(1) not in known_resources:
+                warnings.append(f"Unknown resource '{m.group(1)}'")
+
+        known_prompts = {p.name for p in self._discovery.prompts}
+        for m in self._PROMPT_REF_RE.finditer(gherkin_content):
+            if m.group(1) not in known_prompts:
+                warnings.append(f"Unknown prompt '{m.group(1)}'")
+
+        return warnings
+
+    def _strip_invalid_scenarios(self, gherkin_content: str) -> str:
+        """Remove scenarios that reference unknown tools or prompts.
+
+        Resource URI mismatches are excluded from stripping because the
+        LLM legitimately generates non-existent URIs for negative /
+        error-case test scenarios (e.g. ``user://non_existent_user/profile``).
+        Only tool-name and prompt-name mismatches indicate true hallucinations.
+        """
+        known_tools = {t.name for t in self._discovery.tools}
+        known_prompts = {p.name for p in self._discovery.prompts}
+
+        scenario_re = re.compile(r"\s*(Scenario|Scenario Outline):")
+        tag_re = re.compile(r"\s*@")
+
+        lines = gherkin_content.split("\n")
+        header_lines: list[str] = []
+        blocks: list[list[str]] = []
+        pending_tags: list[str] = []
+        current_block: list[str] | None = None
+
+        for line in lines:
+            if scenario_re.match(line):
+                if current_block is not None:
+                    blocks.append(current_block)
+                current_block = pending_tags + [line]
+                pending_tags = []
+            elif tag_re.match(line) and current_block is None:
+                pending_tags.append(line)
+            elif tag_re.match(line) and current_block is not None:
+                blocks.append(current_block)
+                current_block = None
+                pending_tags = [line]
+            elif current_block is not None:
+                current_block.append(line)
+            else:
+                header_lines.extend(pending_tags)
+                pending_tags = []
+                header_lines.append(line)
+
+        if current_block is not None:
+            blocks.append(current_block)
+        header_lines.extend(pending_tags)
+
+        def _is_valid(block: list[str]) -> bool:
+            text = "\n".join(block)
+            for m in self._TOOL_REF_RE.finditer(text):
+                if m.group(1) not in known_tools:
+                    return False
+            for m in self._PROMPT_REF_RE.finditer(text):
+                if m.group(1) not in known_prompts:
+                    return False
+            return True
+
+        kept = [b for b in blocks if _is_valid(b)]
+        result = header_lines[:]
+        for block in kept:
+            result.extend(block)
+
+        return "\n".join(result)
 
     # ------------------------------------------------------------------
     # Helpers

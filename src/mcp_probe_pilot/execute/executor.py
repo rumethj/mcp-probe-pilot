@@ -58,6 +58,7 @@ class TestExecutor:
         """Create the venv (if needed) and install dependencies."""
         self._create_venv()
         self._install_dependencies()
+        self._install_requirements()
 
     def _create_venv(self) -> None:
         if self._python.exists():
@@ -101,12 +102,45 @@ class TestExecutor:
             )
         logger.info("Dependencies installed successfully")
 
+    def _install_requirements(self) -> None:
+        """Install packages listed in features/requirements.txt (if present)."""
+        req_file = self._features_dir / "requirements.txt"
+        if not req_file.exists():
+            return
+
+        logger.info("Installing from %s", req_file)
+        result = subprocess.run(
+            [
+                "uv", "pip", "install",
+                "--python", str(self._python),
+                "-r", str(req_file),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise ExecutorError(
+                f"Failed to install from requirements.txt: {result.stderr.strip()}"
+            )
+        logger.info("requirements.txt packages installed successfully")
+
     # ------------------------------------------------------------------
     # Test execution
     # ------------------------------------------------------------------
 
-    def run_tests(self) -> TestExecutionResult:
-        """Run ``behave`` inside the venv and return structured results."""
+    def run_tests(
+        self,
+        feature_file: Path | None = None,
+    ) -> TestExecutionResult:
+        """Run ``behave`` inside the venv and return structured results.
+
+        Parameters
+        ----------
+        feature_file:
+            Optional path to a single ``.feature`` file.  When provided
+            only that feature is executed; otherwise the entire features
+            directory is run.
+        """
         if not self._python.exists():
             raise ExecutorError(
                 f"Venv python not found at {self._python}. "
@@ -120,15 +154,17 @@ class TestExecutor:
 
         self._results_file.unlink(missing_ok=True)
 
+        target = str(feature_file) if feature_file else str(self._features_dir)
+
         logger.info(
-            "Running behave in %s (timeout=%ds)", self.repo_root, self.timeout
+            "Running behave on %s (timeout=%ds)", target, self.timeout
         )
 
         try:
             proc = subprocess.run(
                 [
                     str(self._python), "-m", "behave",
-                    str(self._features_dir),
+                    target,
                     "--format", "json",
                     "--outfile", str(self._results_file),
                     "--no-capture",

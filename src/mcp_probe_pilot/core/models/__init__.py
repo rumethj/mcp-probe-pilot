@@ -24,8 +24,15 @@ from mcp_probe_pilot.core.models.gherkin_feature import (
 )
 from mcp_probe_pilot.core.models.step_implementation import StepImplementationResult
 from mcp_probe_pilot.core.models.execution import TestExecutionResult
-from mcp_probe_pilot.core.models.evaluation import EvaluationResults, StepVerdict
-from mcp_probe_pilot.core.models.healing import HealResult
+from mcp_probe_pilot.core.models.report import (
+    ProbeReport,
+    FeatureReport,
+    ScenarioReport,
+    StepResult as ReportStepResult,
+    ScenarioComplianceDetail,
+    Exchange,
+    Violation,
+)
 
 __all__ = [
     "ProbeConfig",
@@ -41,9 +48,18 @@ __all__ = [
     "ScenarioPlan",
     "UnitTestPlanResult",
     "IntegrationTestPlanResult",
+    "GherkinFeature",
+    "GherkinFeatureCollection",
+    "GherkinStep",
+    "GherkinStepType",
+    "GherkinScenario",
     "StepImplementationResult",
     "TestExecutionResult",
-    "EvaluationResults",
-    "StepVerdict",
-    "HealResult",
+    "ProbeReport",
+    "FeatureReport",
+    "ScenarioReport",
+    "ReportStepResult",
+    "ScenarioComplianceDetail",
+    "Exchange",
+    "Violation",
 ]

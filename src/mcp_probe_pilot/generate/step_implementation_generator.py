@@ -56,7 +56,7 @@ class StepImplementationGenerator:
         self._prebuilt_steps_code = prebuilt_steps_code
         self._output_dir = output_dir
         self._steps_file = output_dir / "steps" / "steps.py"
-        self._implemented_patterns: dict[str, str] = {}
+        self._implemented_patterns: dict[str, set[str]] = {}
         self._generated_code_blocks: list[str] = []
 
     # ------------------------------------------------------------------
@@ -83,9 +83,10 @@ class StepImplementationGenerator:
             "Found %d prebuilt step patterns:", len(self._implemented_patterns)
         )
         
-        for pattern, decorator in self._implemented_patterns.items():
+        for pattern, decorators in self._implemented_patterns.items():
             normalized = normalize_step_to_pattern(pattern)
-            logger.info("  @%s('%s')", decorator, pattern)
+            dec_str = ", ".join(f"@{d}" for d in sorted(decorators))
+            logger.info("  %s('%s')", dec_str, pattern)
             logger.info("    -> normalized: '%s'", normalized)
 
         for feature in feature_collection.features:
@@ -116,21 +117,37 @@ class StepImplementationGenerator:
                     )
 
                     if generated_code and generated_code.strip():
-                        self._generated_code_blocks.append(generated_code)
-                        new_patterns = extract_implemented_steps(generated_code)
+                        filtered_code = self._filter_duplicate_steps(
+                            generated_code
+                        )
+                        if not filtered_code or not filtered_code.strip():
+                            logger.info(
+                                "    All LLM-generated steps were duplicates, "
+                                "nothing to add"
+                            )
+                            continue
+
+                        self._generated_code_blocks.append(filtered_code)
+                        new_patterns = extract_implemented_steps(filtered_code)
                         if new_patterns:
-                            for pattern, decorator in new_patterns.items():
+                            for pattern, decorators in new_patterns.items():
                                 normalized = normalize_step_to_pattern(pattern)
+                                dec_str = ", ".join(
+                                    f"@{d}" for d in sorted(decorators)
+                                )
                                 logger.debug(
-                                    "  Generated: @%s('%s') -> normalized: '%s'",
-                                    decorator, pattern, normalized
+                                    "  Generated: %s('%s') -> normalized: '%s'",
+                                    dec_str, pattern, normalized
                                 )
                         else:
                             logger.warning(
-                                "  LLM generated code but no step patterns extracted! Code:\n%s",
-                                generated_code[:500]
+                                "  LLM generated code but no step patterns "
+                                "extracted! Code:\n%s",
+                                filtered_code[:500]
                             )
-                        self._implemented_patterns.update(new_patterns)
+                        _merge_pattern_dicts(
+                            self._implemented_patterns, new_patterns
+                        )
                         result.steps_generated += len(new_patterns)
                         logger.info(
                             "Generated %d new steps for scenario '%s'",
@@ -282,8 +299,9 @@ class StepImplementationGenerator:
             return "(none)"
 
         lines = []
-        for pattern, decorator in sorted(self._implemented_patterns.items()):
-            lines.append(f"- @{decorator}('{pattern}')")
+        for pattern, decorators in sorted(self._implemented_patterns.items()):
+            for dec in sorted(decorators):
+                lines.append(f"- @{dec}('{pattern}')")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -311,6 +329,64 @@ class StepImplementationGenerator:
         raise StepImplementationError(
             "LLM response does not contain a valid Python code block"
         )
+
+    # ------------------------------------------------------------------
+    # Duplicate Filtering
+    # ------------------------------------------------------------------
+
+    def _filter_duplicate_steps(self, code: str) -> str:
+        """Remove step functions whose patterns already exist.
+
+        When the LLM over-generates and returns implementations for steps
+        that are already present in the prebuilts or previously generated
+        code, this strips them out so behave doesn't raise AmbiguousStep.
+        """
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return code
+
+        lines = code.split("\n")
+        lines_to_remove: set[int] = set()
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+
+            step_decorators: list[tuple[str, str]] = []
+            for dec in node.decorator_list:
+                pattern, dec_name = _extract_pattern_from_decorator(dec)
+                if pattern and dec_name:
+                    step_decorators.append((pattern, dec_name))
+
+            if not step_decorators:
+                continue
+
+            all_implemented = all(
+                self._pattern_is_implemented(normalize_step_to_pattern(p))
+                for p, _ in step_decorators
+            )
+
+            if all_implemented:
+                start = node.decorator_list[0].lineno - 1
+                end = node.end_lineno
+                for i in range(start, end):
+                    lines_to_remove.add(i)
+
+                logger.info(
+                    "  Filtering duplicate step from LLM output: %s",
+                    ", ".join(
+                        f"@{d}('{p}')" for p, d in step_decorators
+                    ),
+                )
+
+        if not lines_to_remove:
+            return code
+
+        filtered = [
+            line for i, line in enumerate(lines) if i not in lines_to_remove
+        ]
+        return "\n".join(filtered)
 
     # ------------------------------------------------------------------
     # File Output
@@ -420,17 +496,19 @@ class StepImplementationGenerator:
 # ------------------------------------------------------------------
 
 
-def extract_implemented_steps(code: str) -> dict[str, str]:
+def extract_implemented_steps(code: str) -> dict[str, set[str]]:
     """Parse Python code and extract behave step decorator patterns.
 
-    Returns a dict mapping step pattern strings to their decorator names
-    (given, when, then).
+    Returns a dict mapping step pattern strings to the set of decorator
+    names (given, when, then) that use that pattern.  A single function
+    decorated with both ``@when`` and ``@given`` will have both entries
+    in the set.
 
     Args:
         code: Python source code containing behave step definitions.
 
     Returns:
-        Dict mapping pattern strings to decorator names.
+        Dict mapping pattern strings to sets of decorator names.
     """
     try:
         tree = ast.parse(code)
@@ -438,7 +516,7 @@ def extract_implemented_steps(code: str) -> dict[str, str]:
         logger.warning("Failed to parse code for step extraction")
         return {}
 
-    steps: dict[str, str] = {}
+    steps: dict[str, set[str]] = {}
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.FunctionDef):
@@ -447,9 +525,23 @@ def extract_implemented_steps(code: str) -> dict[str, str]:
         for decorator in node.decorator_list:
             pattern, decorator_name = _extract_pattern_from_decorator(decorator)
             if pattern and decorator_name:
-                steps[pattern] = decorator_name
+                if pattern not in steps:
+                    steps[pattern] = set()
+                steps[pattern].add(decorator_name)
 
     return steps
+
+
+def _merge_pattern_dicts(
+    target: dict[str, set[str]],
+    source: dict[str, set[str]],
+) -> None:
+    """Merge *source* into *target*, unioning decorator sets."""
+    for pattern, decorators in source.items():
+        if pattern in target:
+            target[pattern].update(decorators)
+        else:
+            target[pattern] = set(decorators)
 
 
 def _extract_pattern_from_decorator(

@@ -11,5 +11,5 @@
 .mcp-probe
 .venv
 *.egg-info/
-
+dist/
 old/

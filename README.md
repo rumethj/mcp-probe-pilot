@@ -35,3 +35,11 @@ pip install -e .
 ```bash
 mcp-probe-pilot /path/to/your/mcp/server/source/code/ --generate-new
 ```
+
+
+
+
+sample prompt
+When the executor runs teh test it should generate the report file name with the feature file name appended to it
+Need to make implementation more strict
+Make programmatic healing and validation
