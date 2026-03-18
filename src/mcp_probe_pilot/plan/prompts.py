@@ -114,5 +114,5 @@ a Resource URI, then the client reads the Resource.
    - Look for: tools whose output includes URIs, tools that create/reference \
 resources.
 
-3. **Chain-of-Thought** (chain-of-thought): Tool A output becomes Tool B input.
+3. **Chain-of-Calls** (chain-of-calls): Tool A output becomes Tool B input.
    - Look for: tools whose output fields match other tools' input parameters."""

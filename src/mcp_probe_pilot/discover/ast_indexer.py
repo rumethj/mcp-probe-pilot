@@ -45,6 +45,7 @@ DEFAULT_EXCLUDE_DIRS: set[str] = {
     "reports",
     "*mcp-probe*",
     "*.log",
+    ".*"
 }
 
 DEFAULT_EXCLUDE_FILES: set[str] = {
