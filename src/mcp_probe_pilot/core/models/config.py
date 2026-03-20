@@ -13,6 +13,11 @@ class ProbeConfig(BaseModel):
         description="Relative path override for the features output directory. "
                     "Defaults to 'features' under the repository root when not set.",
     )
+    test_env: dict[str, str] = Field(
+        default_factory=dict,
+        description="Environment variables injected into the server process "
+                    "during test execution and discovery.",
+    )
 
     model_config = {"populate_by_name": True}
 

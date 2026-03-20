@@ -129,7 +129,7 @@ class MCPProbeServiceClient:
             response = await self.client.post(
                 "/api/codebase/index",
                 json={"entities": entities},
-                timeout=120.0,
+                timeout=300.0,
             )
             return await self._handle_response(response)
         except httpx.ConnectError as exc:
@@ -257,6 +257,8 @@ class MCPProbeServiceClient:
             if not file_path.is_file():
                 continue
             if "__pycache__" in file_path.parts:
+                continue
+            if file_path.name in ("mcp-traffic.json", "test-results.json"):
                 continue
             if file_path.suffix not in self._STORABLE_EXTENSIONS:
                 continue

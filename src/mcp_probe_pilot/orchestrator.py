@@ -40,7 +40,7 @@ from mcp_probe_pilot.compliance_engine.validator import ComplianceValidator
 from mcp_probe_pilot.core.models.report import ProbeReport
 from mcp_probe_pilot.execute.executor import TestExecutor, ExecutorError
 from mcp_probe_pilot.plan.planner import Planner
-from mcp_probe_pilot.report_builder import ReportHandler
+from mcp_probe_pilot.report.report_builder import ReportHandler
 from mcp_probe_pilot.validate.validator import FeatureValidator
 
 TRAFFIC_FILENAME = "mcp-traffic.json"
@@ -142,8 +142,13 @@ class MCPProbeOrchestrator:
     async def run_discovery(self) -> DiscoveryResult:
         """Connect to the MCP server and discover its capabilities."""
         logger.info("Starting MCP server discovery: %s", self.config.server_command)
+        discovery_env: dict[str, str] | None = None
+        if self.config.test_env:
+            discovery_env = os.environ.copy()
+            discovery_env.update(self.config.test_env)
         async with MCPSession(
             self.config.server_command,
+            env=discovery_env,
             cwd=self.repository_root,
             errlog=open(os.devnull, "w"),
         ) as session:
@@ -533,6 +538,7 @@ class MCPProbeOrchestrator:
             executor = TestExecutor(
                 repo_root=self.repository_root,
                 dependencies=self.test_dependencies,
+                test_env=self.config.test_env,
             )
             executor.setup_environment()
             return executor.run_tests(feature_file=feature_file)
@@ -540,6 +546,13 @@ class MCPProbeOrchestrator:
             raise OrchestratorError(
                 f"Test execution failed: {exc}"
             ) from exc
+
+    def clear_previous_traffic(self) -> None:
+        """Remove any existing mcp-traffic.json so exchanges don't accumulate across runs."""
+        traffic_path = self.output_dir / TRAFFIC_FILENAME
+        if traffic_path.exists():
+            traffic_path.unlink()
+            logger.info("Cleared previous traffic file: %s", traffic_path)
 
     # ------------------------------------------------------------------
     # MCP Compliance Validation

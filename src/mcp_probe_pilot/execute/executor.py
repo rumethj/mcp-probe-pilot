@@ -33,6 +33,9 @@ class TestExecutor:
         Pre-merged list of pip packages to install into the venv.
     timeout:
         Maximum seconds for the behave run before it is killed.
+    test_env:
+        Extra environment variables merged into the behave subprocess
+        (e.g. ``{"INJECT_MCP_DEFECT": "invalid_version"}``).
     """
 
     def __init__(
@@ -40,10 +43,12 @@ class TestExecutor:
         repo_root: Path,
         dependencies: list[str],
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
+        test_env: dict[str, str] | None = None,
     ) -> None:
         self.repo_root = repo_root
         self.dependencies = list(dict.fromkeys(dependencies))
         self.timeout = timeout
+        self._test_env = test_env or {}
 
         self._venv_path = repo_root / VENV_DIR_NAME
         self._python = self._venv_path / "bin" / "python"
@@ -192,10 +197,15 @@ class TestExecutor:
         return self._parse_results(proc)
 
     def _build_env(self) -> dict[str, str]:
-        """Build environment for the subprocess, inheriting current env."""
+        """Build environment for the subprocess, inheriting current env.
+
+        User-defined ``test_env`` variables are merged last so they can
+        override any inherited value.
+        """
         env = os.environ.copy()
         env["VIRTUAL_ENV"] = str(self._venv_path)
         env["PATH"] = f"{self._venv_path / 'bin'}:{env.get('PATH', '')}"
+        env.update(self._test_env)
         return env
 
     def _parse_results(self, proc: subprocess.CompletedProcess) -> TestExecutionResult:

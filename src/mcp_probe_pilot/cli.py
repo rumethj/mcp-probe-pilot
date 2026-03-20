@@ -335,6 +335,7 @@ def main(
     # Execution (always runs — either from fresh generation or pulled features)
     # ------------------------------------------------------------------
     orchestrator.validate_and_format_feature_files()
+    orchestrator.clear_previous_traffic()
     feature_paths = sorted(
         (repo_root / "features").glob("*.feature")
     )
@@ -525,7 +526,7 @@ def main(
 
     total_elapsed = format_elapsed_time(time.time() - pipeline_start_time)
     console.print(
-        f"\n[bold green]Pipeline finished![/bold green] "
+        f"\n[bold blue]Pipeline finished![/bold blue] "
         f"[dim](Total: {total_elapsed})[/dim]"
     )
     console.print(f"[dim]Detailed logs: {log_file}[/dim]\n")
