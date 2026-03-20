@@ -13,3 +13,4 @@
 *.egg-info/
 dist/
 old/
+secrets.yaml

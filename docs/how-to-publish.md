@@ -1,4 +1,4 @@
-# How-to Publish to PyPi
+# How-to Publish to PyPi Manually
 
 ## Pre-requisites
 
