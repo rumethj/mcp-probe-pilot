@@ -1,0 +1,681 @@
+{
+  "project_code": "weather-mcp-server",
+  "timestamp": "2026-03-13T14:32:07.482193Z",
+  "summary_test_passed": false,
+  "mcp_compliant": false,
+  "code_coverage": null,
+  "spec_version": "2025-11-25",
+  "total_features": 3,
+  "total_scenarios": 7,
+  "passed_scenarios": 5,
+  "failed_scenarios": 2,
+  "feature_reports": [
+    {
+      "feature_name": "Tool — get_current_weather",
+      "summary_test_passed": true,
+      "mcp_compliant": true,
+      "duration": 1.4823,
+      "total_scenarios": 3,
+      "passed_scenarios": 3,
+      "failed_scenarios": 0,
+      "scenarios": [
+        {
+          "scenario_name": "Retrieve weather for a valid city",
+          "status": "passed",
+          "steps": [
+            {
+              "name": "the MCP server is running and initialized",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "I call the tool \"get_current_weather\" with arguments {\"city\": \"London\"}",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "the response should contain a \"temperature\" field",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "the response should contain a \"condition\" field",
+              "status": "passed",
+              "error_message": null
+            }
+          ],
+          "compliance": {
+            "mcp_compliant": true,
+            "total_exchanges": 3,
+            "violations": []
+          },
+          "exchanges": [
+            {
+              "method": "initialize",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": {},
+                  "clientInfo": { "name": "mcp-probe-pilot", "version": "0.1.0" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": { "tools": {} },
+                  "serverInfo": { "name": "weather-mcp-server", "version": "1.2.0" }
+                }
+              },
+              "message": null
+            },
+            {
+              "method": "notifications/initialized",
+              "type": "notification",
+              "request": null,
+              "response": null,
+              "message": {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+              }
+            },
+            {
+              "method": "tools/call",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                  "name": "get_current_weather",
+                  "arguments": { "city": "London" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "{\"city\":\"London\",\"temperature\":12.5,\"condition\":\"Partly cloudy\",\"humidity\":78}"
+                    }
+                  ]
+                }
+              },
+              "message": null
+            }
+          ]
+        },
+        {
+          "scenario_name": "Retrieve weather for an unknown city returns isError",
+          "status": "passed",
+          "steps": [
+            {
+              "name": "the MCP server is running and initialized",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "I call the tool \"get_current_weather\" with arguments {\"city\": \"Atlantis\"}",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "the response should have \"isError\" set to true",
+              "status": "passed",
+              "error_message": null
+            }
+          ],
+          "compliance": {
+            "mcp_compliant": true,
+            "total_exchanges": 3,
+            "violations": []
+          },
+          "exchanges": [
+            {
+              "method": "initialize",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": {},
+                  "clientInfo": { "name": "mcp-probe-pilot", "version": "0.1.0" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": { "tools": {} },
+                  "serverInfo": { "name": "weather-mcp-server", "version": "1.2.0" }
+                }
+              },
+              "message": null
+            },
+            {
+              "method": "notifications/initialized",
+              "type": "notification",
+              "request": null,
+              "response": null,
+              "message": {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+              }
+            },
+            {
+              "method": "tools/call",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                  "name": "get_current_weather",
+                  "arguments": { "city": "Atlantis" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "City 'Atlantis' not found in weather database."
+                    }
+                  ],
+                  "isError": true
+                }
+              },
+              "message": null
+            }
+          ]
+        },
+        {
+          "scenario_name": "Call get_current_weather with missing required argument",
+          "status": "passed",
+          "steps": [
+            {
+              "name": "the MCP server is running and initialized",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "I call the tool \"get_current_weather\" with arguments {}",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "the response should be a JSON-RPC error with code -32602",
+              "status": "passed",
+              "error_message": null
+            }
+          ],
+          "compliance": {
+            "mcp_compliant": true,
+            "total_exchanges": 3,
+            "violations": []
+          },
+          "exchanges": [
+            {
+              "method": "initialize",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": {},
+                  "clientInfo": { "name": "mcp-probe-pilot", "version": "0.1.0" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": { "tools": {} },
+                  "serverInfo": { "name": "weather-mcp-server", "version": "1.2.0" }
+                }
+              },
+              "message": null
+            },
+            {
+              "method": "notifications/initialized",
+              "type": "notification",
+              "request": null,
+              "response": null,
+              "message": {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+              }
+            },
+            {
+              "method": "tools/call",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                  "name": "get_current_weather",
+                  "arguments": {}
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "error": {
+                  "code": -32602,
+                  "message": "Invalid params: missing required argument 'city'."
+                }
+              },
+              "message": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_name": "Tool — get_forecast",
+      "summary_test_passed": false,
+      "mcp_compliant": false,
+      "duration": 0.9217,
+      "total_scenarios": 2,
+      "passed_scenarios": 1,
+      "failed_scenarios": 1,
+      "scenarios": [
+        {
+          "scenario_name": "Retrieve a 3-day forecast for a valid city",
+          "status": "passed",
+          "steps": [
+            {
+              "name": "the MCP server is running and initialized",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "I call the tool \"get_forecast\" with arguments {\"city\": \"Paris\", \"days\": 3}",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "the response should contain a list of 3 forecast entries",
+              "status": "passed",
+              "error_message": null
+            }
+          ],
+          "compliance": {
+            "mcp_compliant": true,
+            "total_exchanges": 3,
+            "violations": []
+          },
+          "exchanges": [
+            {
+              "method": "initialize",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": {},
+                  "clientInfo": { "name": "mcp-probe-pilot", "version": "0.1.0" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": { "tools": {} },
+                  "serverInfo": { "name": "weather-mcp-server", "version": "1.2.0" }
+                }
+              },
+              "message": null
+            },
+            {
+              "method": "notifications/initialized",
+              "type": "notification",
+              "request": null,
+              "response": null,
+              "message": {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+              }
+            },
+            {
+              "method": "tools/call",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                  "name": "get_forecast",
+                  "arguments": { "city": "Paris", "days": 3 }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "[{\"date\":\"2026-03-14\",\"high\":14,\"low\":7,\"condition\":\"Rain\"},{\"date\":\"2026-03-15\",\"high\":16,\"low\":9,\"condition\":\"Cloudy\"},{\"date\":\"2026-03-16\",\"high\":18,\"low\":10,\"condition\":\"Sunny\"}]"
+                    }
+                  ]
+                }
+              },
+              "message": null
+            }
+          ]
+        },
+        {
+          "scenario_name": "Retrieve forecast with invalid days parameter",
+          "status": "failed",
+          "steps": [
+            {
+              "name": "the MCP server is running and initialized",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "I call the tool \"get_forecast\" with arguments {\"city\": \"Berlin\", \"days\": -1}",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "the response should be a JSON-RPC error with code -32602",
+              "status": "failed",
+              "error_message": "AssertionError: Expected JSON-RPC error with code -32602 but received a success result. The server returned a 0-day forecast instead of rejecting the invalid input."
+            }
+          ],
+          "compliance": {
+            "mcp_compliant": false,
+            "total_exchanges": 3,
+            "violations": [
+              {
+                "exchange_index": 2,
+                "method": "tools/call",
+                "rule": "invalid-params-must-error",
+                "message": "Server MUST return error code -32602 for invalid parameters, but returned a success result for days=-1.",
+                "path": "result",
+                "severity": "error"
+              }
+            ]
+          },
+          "exchanges": [
+            {
+              "method": "initialize",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": {},
+                  "clientInfo": { "name": "mcp-probe-pilot", "version": "0.1.0" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": { "tools": {} },
+                  "serverInfo": { "name": "weather-mcp-server", "version": "1.2.0" }
+                }
+              },
+              "message": null
+            },
+            {
+              "method": "notifications/initialized",
+              "type": "notification",
+              "request": null,
+              "response": null,
+              "message": {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+              }
+            },
+            {
+              "method": "tools/call",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                  "name": "get_forecast",
+                  "arguments": { "city": "Berlin", "days": -1 }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "[]"
+                    }
+                  ]
+                }
+              },
+              "message": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_name": "Resource — weather://alerts",
+      "summary_test_passed": false,
+      "mcp_compliant": false,
+      "duration": 0.6541,
+      "total_scenarios": 2,
+      "passed_scenarios": 1,
+      "failed_scenarios": 1,
+      "scenarios": [
+        {
+          "scenario_name": "Read active weather alerts resource",
+          "status": "passed",
+          "steps": [
+            {
+              "name": "the MCP server is running and initialized",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "I read the resource \"weather://alerts\"",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "the response should contain resource contents with mimeType \"application/json\"",
+              "status": "passed",
+              "error_message": null
+            }
+          ],
+          "compliance": {
+            "mcp_compliant": true,
+            "total_exchanges": 3,
+            "violations": []
+          },
+          "exchanges": [
+            {
+              "method": "initialize",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": {},
+                  "clientInfo": { "name": "mcp-probe-pilot", "version": "0.1.0" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": { "tools": {}, "resources": {} },
+                  "serverInfo": { "name": "weather-mcp-server", "version": "1.2.0" }
+                }
+              },
+              "message": null
+            },
+            {
+              "method": "notifications/initialized",
+              "type": "notification",
+              "request": null,
+              "response": null,
+              "message": {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+              }
+            },
+            {
+              "method": "resources/read",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "resources/read",
+                "params": { "uri": "weather://alerts" }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                  "contents": [
+                    {
+                      "uri": "weather://alerts",
+                      "mimeType": "application/json",
+                      "text": "[{\"region\":\"South East England\",\"severity\":\"yellow\",\"type\":\"wind\",\"valid_until\":\"2026-03-14T06:00:00Z\"}]"
+                    }
+                  ]
+                }
+              },
+              "message": null
+            }
+          ]
+        },
+        {
+          "scenario_name": "Read a non-existent resource URI",
+          "status": "failed",
+          "steps": [
+            {
+              "name": "the MCP server is running and initialized",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "I read the resource \"weather://does-not-exist\"",
+              "status": "passed",
+              "error_message": null
+            },
+            {
+              "name": "the response should be a JSON-RPC error",
+              "status": "failed",
+              "error_message": "AssertionError: Expected a JSON-RPC error response for unknown resource URI, but the server returned an empty contents array instead."
+            }
+          ],
+          "compliance": {
+            "mcp_compliant": false,
+            "total_exchanges": 3,
+            "violations": [
+              {
+                "exchange_index": 2,
+                "method": "resources/read",
+                "rule": "resource-not-found-must-error",
+                "message": "Server MUST return an error when the requested resource URI is not found, but returned an empty success response.",
+                "path": "result.contents",
+                "severity": "error"
+              },
+              {
+                "exchange_index": 2,
+                "method": "resources/read",
+                "rule": "error-should-include-data",
+                "message": "Error responses SHOULD include a 'data' field with additional context about the failure.",
+                "path": "error.data",
+                "severity": "warning"
+              }
+            ]
+          },
+          "exchanges": [
+            {
+              "method": "initialize",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": {},
+                  "clientInfo": { "name": "mcp-probe-pilot", "version": "0.1.0" }
+                }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "result": {
+                  "protocolVersion": "2025-11-25",
+                  "capabilities": { "tools": {}, "resources": {} },
+                  "serverInfo": { "name": "weather-mcp-server", "version": "1.2.0" }
+                }
+              },
+              "message": null
+            },
+            {
+              "method": "notifications/initialized",
+              "type": "notification",
+              "request": null,
+              "response": null,
+              "message": {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized"
+              }
+            },
+            {
+              "method": "resources/read",
+              "type": "request_response",
+              "request": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "resources/read",
+                "params": { "uri": "weather://does-not-exist" }
+              },
+              "response": {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                  "contents": []
+                }
+              },
+              "message": null
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
