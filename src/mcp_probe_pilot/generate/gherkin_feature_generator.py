@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from gherkin.parser import Parser as GherkinParser
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
 
+from mcp_probe_pilot.core.models.generation import GenerationResult
 from mcp_probe_pilot.generate.prompts import (
     CANONICAL_STEP_LIBRARY,
     INTEGRATION_HUMAN,
@@ -53,14 +53,6 @@ MAX_RETRIES = 1
 
 class GherkinGenerationError(Exception):
     """Raised when generated content is not valid Gherkin."""
-
-
-class GenerationResult(BaseModel):
-    """Summary of a feature-file generation run."""
-
-    files_generated: int = 0
-    files_failed: int = 0
-    validation_warnings: list[str] = Field(default_factory=list)
 
 
 class GherkinFeatureGenerator:

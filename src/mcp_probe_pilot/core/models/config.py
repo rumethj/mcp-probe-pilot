@@ -8,6 +8,11 @@ class ProbeConfig(BaseModel):
     transport: str
     service_url: str
     generate_new: bool = False
+    features_dir: str | None = Field(
+        default=None,
+        description="Relative path override for the features output directory. "
+                    "Defaults to 'features' under the repository root when not set.",
+    )
 
     model_config = {"populate_by_name": True}
 

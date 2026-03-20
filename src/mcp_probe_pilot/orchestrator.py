@@ -28,10 +28,8 @@ from mcp_probe_pilot.core.mcp_session import MCPSession
 from mcp_probe_pilot.core.service_client import MCPProbeServiceClient, ServiceClientError
 from mcp_probe_pilot.discover.discoverer import MCPDiscoverer
 from mcp_probe_pilot.discover.ast_indexer import ASTIndexer
-from mcp_probe_pilot.generate.gherkin_feature_generator import (
-    GenerationResult,
-    GherkinFeatureGenerator,
-)
+from mcp_probe_pilot.core.models.generation import GenerationResult
+from mcp_probe_pilot.generate.gherkin_feature_generator import GherkinFeatureGenerator
 from mcp_probe_pilot.generate.gherkin_formatter import GherkinFormatter
 from mcp_probe_pilot.generate.step_implementation_generator import (
     StepImplementationGenerator,
@@ -42,7 +40,7 @@ from mcp_probe_pilot.compliance_engine.validator import ComplianceValidator
 from mcp_probe_pilot.core.models.report import ProbeReport
 from mcp_probe_pilot.execute.executor import TestExecutor, ExecutorError
 from mcp_probe_pilot.plan.planner import Planner
-from mcp_probe_pilot.report_builder import build_and_push_report
+from mcp_probe_pilot.report_builder import ReportHandler
 from mcp_probe_pilot.validate.validator import FeatureValidator
 
 TRAFFIC_FILENAME = "mcp-traffic.json"
@@ -83,6 +81,11 @@ class MCPProbeOrchestrator:
         # Accumulated test dependencies (built up across pipeline stages)
         self.test_dependencies: list[str] = []
 
+        # Output directory: configurable via features_dir in the config JSON
+        if self.config.features_dir:
+            self.output_dir = self.repository_root / self.config.features_dir
+        else:
+            self.output_dir = self.repository_root / "features"
 
     @staticmethod
     def _load_config(repo_root: Path) -> ProbeConfig:
@@ -299,7 +302,7 @@ class MCPProbeOrchestrator:
                 "Run run_integration_test_planning() first."
             )
 
-        output_dir = self.repository_root / "features"
+        output_dir = self.output_dir
 
         with LLMClient() as llm:
             async with MCPProbeServiceClient(
@@ -418,7 +421,7 @@ class MCPProbeOrchestrator:
                 "Run validate_and_format_feature_files() first."
             )
 
-        output_dir = self.repository_root / "features"
+        output_dir = self.output_dir
 
         logger.info(
             "Generating step implementations for %d features with %d unique steps",
@@ -586,23 +589,25 @@ class MCPProbeOrchestrator:
     async def generate_and_push_report(
         self,
         compliance_report: ComplianceReport,
-    ) -> ProbeReport:
+    ) -> tuple[ProbeReport, str | None]:
         """Build a ProbeReport from the latest artefacts and push it to the service.
 
         Should be called after both test execution and compliance validation
         have completed.  The report is pushed to the service but failures
         to reach the service are logged as warnings, not raised.
+
+        Returns (report, report_id) where report_id is the server-assigned
+        identifier, or None if the push failed.
         """
-        features_dir = self.repository_root / "features"
         project_code = self.config.project_code
         logger.info("Building probe report for project_code=%s", project_code)
 
-        report = await build_and_push_report(
+        handler = ReportHandler(
             project_code=project_code,
-            features_dir=features_dir,
-            compliance_report=compliance_report,
+            features_dir=self.output_dir,
             service_url=self.config.service_url,
         )
+        report, report_id = await handler.build_and_push_report(compliance_report)
 
         logger.info(
             "Report built: %d features, %d/%d scenarios passed, mcp_compliant=%s",
@@ -611,7 +616,7 @@ class MCPProbeOrchestrator:
             report.total_scenarios,
             report.mcp_compliant,
         )
-        return report
+        return report, report_id
 
     # ------------------------------------------------------------------
     # Features storage (service-backed persistence)
@@ -653,7 +658,7 @@ class MCPProbeOrchestrator:
 
         Returns the list of paths written.
         """
-        output_dir = self.repository_root / "features"
+        output_dir = self.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
 
         try:

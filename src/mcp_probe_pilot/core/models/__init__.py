@@ -22,12 +22,14 @@ from mcp_probe_pilot.core.models.gherkin_feature import (
     GherkinStepType,
     GherkinScenario,
 )
+from mcp_probe_pilot.core.models.generation import GenerationResult
 from mcp_probe_pilot.core.models.step_implementation import StepImplementationResult
 from mcp_probe_pilot.core.models.execution import TestExecutionResult
 from mcp_probe_pilot.core.models.report import (
     ProbeReport,
     FeatureReport,
     ScenarioReport,
+    StepDataTable,
     StepResult as ReportStepResult,
     ScenarioComplianceDetail,
     Exchange,
@@ -53,12 +55,14 @@ __all__ = [
     "GherkinStep",
     "GherkinStepType",
     "GherkinScenario",
+    "GenerationResult",
     "StepImplementationResult",
     "TestExecutionResult",
     "ProbeReport",
     "FeatureReport",
     "ScenarioReport",
     "ReportStepResult",
+    "StepDataTable",
     "ScenarioComplianceDetail",
     "Exchange",
     "Violation",

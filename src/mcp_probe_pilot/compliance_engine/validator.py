@@ -2,7 +2,7 @@
 
 Reads a traffic log (mcp-traffic.json) produced by the recording MCPClient,
 validates every server response against the official MCP specification, and
-returns a structured ComplianceReport.
+returns a structured ComplianceReport with per-exchange pass/fail tracking.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from typing import Any
 
 from mcp_probe_pilot.compliance_engine.models import (
     ComplianceReport,
+    ExchangeComplianceResult,
     ExchangeViolation,
     ScenarioComplianceResult,
 )
@@ -21,6 +22,124 @@ from mcp_probe_pilot.compliance_engine.models import (
 logger = logging.getLogger(__name__)
 
 SPEC_VERSION = "2025-11-25"
+
+# ---------------------------------------------------------------------------
+# Rule registry: maps contexts to the full set of rules that can be checked.
+# ---------------------------------------------------------------------------
+
+ENVELOPE_RULES: frozenset[str] = frozenset({
+    "jsonrpc-version",
+    "response-id-present",
+    "response-id-match",
+    "result-xor-error",
+    "result-or-error-required",
+    "missing-response",
+    "missing-result",
+})
+
+ERROR_RULES: frozenset[str] = frozenset({
+    "error-is-object",
+    "error-code-required",
+    "error-code-integer",
+    "error-message-required",
+    "error-message-string",
+})
+
+NOTIFICATION_RULES: frozenset[str] = frozenset({
+    "jsonrpc-version",
+    "notification-no-id",
+})
+
+METHOD_RULES: dict[str, frozenset[str]] = {
+    "initialize": frozenset({
+        "initialize-protocolVersion-required",
+        "initialize-capabilities-required",
+        "initialize-serverInfo-required",
+        "initialize-protocolVersion-type",
+        "initialize-capabilities-type",
+        "initialize-serverInfo-type",
+        "initialize-serverInfo-name-required",
+        "initialize-serverInfo-version-required",
+        "initialize-serverInfo-name-type",
+        "initialize-serverInfo-version-type",
+    }),
+    "tools/list": frozenset({
+        "tools-list-tools-required",
+        "tools-list-tools-type",
+        "tool-is-object",
+        "tool-name-required",
+        "tool-name-type",
+        "tool-inputSchema-required",
+        "tool-inputSchema-type",
+        "nextCursor-type",
+    }),
+    "tools/call": frozenset({
+        "tools-call-content-required",
+        "tools-call-content-type",
+        "content-block-is-object",
+        "content-block-type-required",
+        "text-content-text-required",
+        "text-content-text-type",
+        "image-content-data-required",
+        "image-content-mimeType-required",
+        "audio-content-data-required",
+        "audio-content-mimeType-required",
+        "embedded-resource-required",
+        "embedded-resource-uri-required",
+        "embedded-resource-content-required",
+        "resource-link-uri-required",
+        "tools-call-isError-type",
+    }),
+    "resources/list": frozenset({
+        "resources-list-resources-required",
+        "resources-list-resources-type",
+        "resource-is-object",
+        "resource-uri-required",
+        "resource-uri-type",
+        "resource-name-required",
+        "resource-name-type",
+        "nextCursor-type",
+    }),
+    "resources/read": frozenset({
+        "resources-read-contents-required",
+        "resources-read-contents-type",
+        "resource-content-is-object",
+        "resource-content-uri-required",
+        "resource-content-uri-type",
+        "resource-content-text-or-blob",
+    }),
+    "prompts/list": frozenset({
+        "prompts-list-prompts-required",
+        "prompts-list-prompts-type",
+        "prompt-is-object",
+        "prompt-name-required",
+        "prompt-name-type",
+        "prompt-arguments-type",
+        "prompt-argument-name-required",
+        "nextCursor-type",
+    }),
+    "prompts/get": frozenset({
+        "prompts-get-messages-required",
+        "prompts-get-messages-type",
+        "prompt-message-is-object",
+        "prompt-message-role-required",
+        "prompt-message-role-value",
+        "prompt-message-content-required",
+    }),
+}
+
+
+def _applicable_rules(ex_type: str, method: str, has_error: bool) -> set[str]:
+    """Return the full set of rules applicable to this exchange context."""
+    if ex_type in ("notification", "server_notification"):
+        return set(NOTIFICATION_RULES)
+
+    rules = set(ENVELOPE_RULES)
+    if has_error:
+        rules |= ERROR_RULES
+    else:
+        rules |= METHOD_RULES.get(method, frozenset())
+    return rules
 
 
 class ComplianceValidator:
@@ -64,16 +183,35 @@ class ComplianceValidator:
         scenario_name = scenario_data.get("scenario_name", "unknown")
         exchanges = scenario_data.get("exchanges", [])
 
-        violations: list[ExchangeViolation] = []
+        all_violations: list[ExchangeViolation] = []
+        exchange_results: list[ExchangeComplianceResult] = []
 
         for idx, exchange in enumerate(exchanges):
-            violations.extend(self._validate_exchange(idx, exchange))
+            violations = self._validate_exchange(idx, exchange)
+            all_violations.extend(violations)
+
+            ex_type = exchange.get("type", "")
+            method = exchange.get("method", "")
+            response = exchange.get("response") or {}
+            has_error = "error" in response
+
+            applicable = _applicable_rules(ex_type, method, has_error)
+            violated_ids = {v.rule for v in violations}
+            passed = sorted(applicable - violated_ids)
+
+            exchange_results.append(ExchangeComplianceResult(
+                exchange_index=idx,
+                method=method,
+                passed_rules=passed,
+                violations=violations,
+            ))
 
         return ScenarioComplianceResult(
             feature_name=feature_name,
             scenario_name=scenario_name,
             total_exchanges=len(exchanges),
-            violations=violations,
+            violations=all_violations,
+            exchange_results=exchange_results,
         )
 
     def _validate_exchange(

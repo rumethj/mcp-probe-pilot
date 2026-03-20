@@ -30,6 +30,14 @@ class Exchange(BaseModel):
     message: Optional[dict[str, Any]] = Field(
         default=None, description="Notification payload (when type is not request_response).",
     )
+    passed_rules: list[str] = Field(
+        default_factory=list,
+        description="Rule IDs that the response passed for this exchange.",
+    )
+    violations: list[Violation] = Field(
+        default_factory=list,
+        description="Rule violations found for this exchange's response.",
+    )
 
 
 class ScenarioComplianceDetail(BaseModel):
@@ -38,10 +46,20 @@ class ScenarioComplianceDetail(BaseModel):
     violations: list[Violation] = Field(default_factory=list)
 
 
+class StepDataTable(BaseModel):
+    """A data table attached to a Gherkin step (e.g. parameter tables)."""
+    headings: list[str] = Field(default_factory=list)
+    rows: list[list[str]] = Field(default_factory=list)
+
+
 class StepResult(BaseModel):
     name: str
     status: str = Field(description="passed, failed, skipped, undefined, or errored.")
     error_message: Optional[str] = None
+    data_table: Optional[StepDataTable] = Field(
+        default=None,
+        description="Data table associated with this step, if any.",
+    )
 
 
 class ScenarioReport(BaseModel):

@@ -30,6 +30,19 @@ class ExchangeViolation(BaseModel):
     )
 
 
+class ExchangeComplianceResult(BaseModel):
+    """Per-exchange compliance result with both passed and failed rules."""
+
+    exchange_index: int
+    method: str
+    passed_rules: list[str] = Field(default_factory=list)
+    violations: list[ExchangeViolation] = Field(default_factory=list)
+
+    @property
+    def all_passed(self) -> bool:
+        return all(v.severity != "error" for v in self.violations)
+
+
 class ScenarioComplianceResult(BaseModel):
     """Compliance result for a single BDD scenario."""
 
@@ -37,6 +50,7 @@ class ScenarioComplianceResult(BaseModel):
     scenario_name: str
     total_exchanges: int = 0
     violations: list[ExchangeViolation] = Field(default_factory=list)
+    exchange_results: list[ExchangeComplianceResult] = Field(default_factory=list)
 
     @property
     def passed(self) -> bool:

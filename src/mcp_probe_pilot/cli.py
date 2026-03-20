@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import time
 from pathlib import Path
@@ -9,6 +10,7 @@ from rich.panel import Panel
 
 from mcp_probe_pilot.orchestrator import MCPProbeOrchestrator, OrchestratorError
 
+logger = logging.getLogger(__name__)
 app = typer.Typer(add_completion=False, help="MCP-Probe CLI")
 console = Console()
 
@@ -343,6 +345,8 @@ def main(
         f"{total_features} feature(s)...[/bold]"
     )
 
+    all_raw_json: list = []
+
     for feat_idx, feature_path in enumerate(feature_paths, start=1):
         feature_name = feature_path.name
         feature = orchestrator.get_feature_by_path(feature_path)
@@ -370,13 +374,13 @@ def main(
                 elapsed = format_elapsed_time(time.time() - start_time)
                 if test_result.success:
                     console.print(
-                        f"[green]✓ \\[/green] All scenarios passed! "
+                        f"[green]✓ All scenarios passed![/green] "
                         f"{test_result.passed}/{test_result.total_scenarios} passed. "
                         f"[dim](Ran in {elapsed})[/dim]"
                     )
                 else:
                     console.print(
-                        f"[yellow]⚠ \\[/yellow] Tests executed with failures: "
+                        f"[yellow]⚠ Tests executed with failures: [/yellow]"
                         f"{test_result.passed} passed, {test_result.failed} failed, "
                         f"{test_result.errored} errored, {test_result.skipped} skipped "
                         f"({test_result.total_scenarios} total). "
@@ -393,15 +397,19 @@ def main(
                 )
                 raise typer.Exit(code=1)
 
-        if test_result.success:
-            console.print(
-                f"Test runner generated report successfully. "
-            )
-
-        if not test_result.raw_json:
+        if test_result.raw_json:
+            all_raw_json.extend(test_result.raw_json)
+        else:
             console.print(
                 f"Test runner crashed (no JSON report). "
             )
+
+    results_file = repo_root / "features" / "test-results.json"
+    if all_raw_json:
+        results_file.write_text(
+            json.dumps(all_raw_json, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
 
     # Step 3: MCP Compliance Validation
@@ -463,7 +471,7 @@ def main(
     ):
         try:
             start_time = time.time()
-            report = asyncio.run(
+            report, report_id = asyncio.run(
                 orchestrator.generate_and_push_report(compliance_report)
             )
             elapsed = format_elapsed_time(time.time() - start_time)
@@ -481,7 +489,15 @@ def main(
                 f"({status_label}), MCP {compliant_label}. "
                 f"[dim](Ran in {elapsed})[/dim]"
             )
+            if report_id:
+                service_url = orchestrator.get_service_url().rstrip("/")
+                project_code = orchestrator.config.project_code
+                report_url = f"{service_url}/project/{project_code}/report/{report_id}"
+                console.print(
+                    f"[bold blue]View report:[/bold blue] {report_url}"
+                )
         except Exception as exc:
+            logger.warning("Failed to build/push report: %s", exc, exc_info=True)
             console.print(
                 f"[yellow]⚠[/yellow] Failed to build/push report: {exc}"
             )
