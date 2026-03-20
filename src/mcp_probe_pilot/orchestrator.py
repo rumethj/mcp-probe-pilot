@@ -319,6 +319,7 @@ class MCPProbeOrchestrator:
                     output_dir=output_dir,
                     discovery_result=self.discovery_result,
                     server_command=self.config.server_command,
+                    test_data=self.config.test_data,
                 )
                 result = await generator.generate_all(
                     unit_plan=self.unit_test_plan,

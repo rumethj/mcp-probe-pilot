@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -17,6 +19,12 @@ class ProbeConfig(BaseModel):
         default_factory=dict,
         description="Environment variables injected into the server process "
                     "during test execution and discovery.",
+    )
+    test_data: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional test data manifest. Arbitrary key-value pairs "
+                    "injected into LLM prompts to provide valid/invalid test "
+                    "values and prevent hallucinated data.",
     )
 
     model_config = {"populate_by_name": True}

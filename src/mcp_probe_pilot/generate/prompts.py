@@ -10,6 +10,7 @@ Rules:
 - Every Scenario must contain at least one When, and one Then step.
 - Do NOT include any markdown formatting, code fences, or explanations.
 - CRITICAL: Only use test data values (usernames, user IDs, enum values, etc.) that appear in the provided source code context or tool descriptions. Do NOT invent usernames, user IDs, or other domain-specific identifiers. If the tool description mentions pre-seeded users like 'admin' and 'developer', use those exact values — never invent names like 'testuser' or 'user1'.
+- CRITICAL: If a "Test Data Manifest" section is provided, you MUST use ONLY the values from that manifest for test data. Do NOT invent IDs, user names, or other domain values — use exactly what the manifest provides. The manifest keys describe categories of data (e.g., "available_books", "invalid_book_ids") — use them appropriately for happy-path vs error-case scenarios.
 - Each scenario should test ONE specific behavior.
 - Do not leave any Scenario incomplete. If you are running out of space, complete the current scenario and stop.
 - Include tags (@happy-path, @error-case, @edge-case) on each scenario.

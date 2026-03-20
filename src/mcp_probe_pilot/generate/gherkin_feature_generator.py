@@ -65,12 +65,14 @@ class GherkinFeatureGenerator:
         output_dir: Path,
         discovery_result: DiscoveryResult,
         server_command: str,
+        test_data: dict[str, Any] | None = None,
     ) -> None:
         self._llm = llm
         self._service_client = service_client
         self._output_dir = output_dir
         self._discovery = discovery_result
         self._server_command = server_command
+        self._test_data = test_data or {}
         self._semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
         self._generated_step_patterns: set[str] = set()
 
@@ -262,6 +264,7 @@ class GherkinFeatureGenerator:
                 primitives_summary=primitives_summary,
                 code_context=code_context,
             )
+            base_content += self._render_test_data_section()
             human_content = self._append_step_reuse_context(base_content)
 
             gherkin_content, warning = await self._generate_and_validate(
@@ -350,6 +353,7 @@ class GherkinFeatureGenerator:
         else:
             raise ValueError(f"Unknown primitive type: {prim_type}")
 
+        base_content += self._render_test_data_section()
         return self._append_step_reuse_context(base_content)
 
     @staticmethod
@@ -373,6 +377,22 @@ class GherkinFeatureGenerator:
         if not hints:
             return ""
         return "## Parameter Constraints\n" + "\n".join(hints)
+
+    def _render_test_data_section(self) -> str:
+        """Format the test data manifest as a prompt section.
+
+        Returns an empty string when no test data has been provided,
+        keeping prompts unchanged for servers without a manifest.
+        """
+        if not self._test_data:
+            return ""
+        return (
+            "\n## Test Data Manifest (USE ONLY THESE VALUES)\n"
+            "The MCP server developer has provided the following test data. "
+            "You MUST use these exact values in your scenarios instead of "
+            "inventing your own.\n\n"
+            f"```json\n{json.dumps(self._test_data, indent=2)}\n```\n"
+        )
 
     def _append_step_reuse_context(self, base_content: str) -> str:
         """Append canonical step library and used steps to prompt content."""
