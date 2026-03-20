@@ -15,6 +15,7 @@
 ### 1. Create Tekton Tasks
 
 Update the mcp-probe-pilot/ci-integration/tasks.yaml to use an image with environment image and variables required by your server.
+
 ```yaml
 apiVersion: tekton.dev/v1beta1
 kind: Task
@@ -28,6 +29,7 @@ spec:
 ```
 
 Apply the tasks.yaml file to the cluster with the command:
+
 ```sh
 kubectl apply --filename mcp-probe-pilot/ci-integration/tasks.yaml
 ```
@@ -70,7 +72,7 @@ kubectl apply --filename mcp-probe-pilot/ci-integration/mcp-probe-service.yaml
 ### 2. Execute the Pipeline
 
 ```sh
-kubectl create --filename mcp-probe-pilot/ci-integration/pipelinerun/pipelinerun.yaml
+kubectl create --filename mcp-probe-pilot/ci-integration/pipelinerun.yaml
 ```
 
 ### 3. Monitor the Pipeline Run with the Dashboard

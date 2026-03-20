@@ -6,7 +6,7 @@
 - project_code: The code of your MCP server.
 - server_command: The command to start your MCP server.
 - transport: The transport to use for your MCP server.
-- service_url: The URL of your MCP server. (This should be the URL where the mcp-probe-service is running)
+- service_url: The URL end-point of MCP Probe Service. (This should be the URL where the mcp-probe-service is running: Use "http://mcp-probe-service:8080" for in cluster deployment)
 - test_env: The environment variables to use for your MCP server.
 - test_data: The test data to use for your MCP server.
 
