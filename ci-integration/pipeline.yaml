@@ -1,0 +1,37 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  name: mcp-probe-sample-pipeline
+spec:
+  params:
+    - name: repo-url
+      type: string
+    - name: checkout-ref
+      type: string
+      default: "checkout"
+  workspaces:
+    - name: shared-data
+  tasks:
+    - name: clone
+      params:
+        - name: repo-url
+          value: $(params.repo-url)
+        - name: checkout-ref
+          value: $(params.checkout-ref)
+      workspaces:
+        - name: source
+          workspace: shared-data
+      taskRef:
+        name: clone-repo
+
+    - name: run-mcp-probe-pilot
+      runAfter:
+        - clone
+      params:
+        - name: checkout-ref
+          value: $(params.checkout-ref)
+      workspaces:
+        - name: source
+          workspace: shared-data
+      taskRef:
+        name: run-mcp-probe-pilot

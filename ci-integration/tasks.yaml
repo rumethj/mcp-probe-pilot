@@ -1,0 +1,41 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: clone-repo
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: repo-url
+      type: string
+    - name: checkout-ref
+      type: string
+  steps:
+    - name: clone
+      image: alpine/git
+      script: |
+        git clone $(params.repo-url) $(workspaces.source.path)/$(params.checkout-ref)
+
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: run-mcp-probe-pilot
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: checkout-ref
+      type: string
+  steps:
+    - name: run-mcp-probe-pilot
+      image: python:3.14-slim
+      env:
+        - name: GEMINI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: gemini-api-key
+              key: GEMINI_API_KEY
+      script: |
+        pip install mcp-probe-pilot
+        mcp-probe-pilot $(workspaces.source.path)/$(params.checkout-ref) --generate-new

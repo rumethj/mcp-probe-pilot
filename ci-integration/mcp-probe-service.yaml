@@ -1,0 +1,49 @@
+# mcp-probe-core.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mcp-probe-pvc
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-probe-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-probe
+  template:
+    metadata:
+      labels:
+        app: mcp-probe
+    spec:
+      containers:
+      - name: mcp-probe
+        image: ghcr.io/rumethj/mcp-probe-service:latest
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: storage
+          mountPath: /app/data
+      volumes:
+      - name: storage
+        persistentVolumeClaim:
+          claimName: mcp-probe-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-probe-service
+spec:
+  selector:
+    app: mcp-probe
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080

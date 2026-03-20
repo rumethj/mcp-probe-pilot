@@ -1,0 +1,19 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  generateName: mcp-probe-sample-run-
+spec:
+  pipelineRef:
+    name: mcp-probe-sample-pipeline
+  params:
+    - name: repo-url
+      value: "https://github.com/rumethj/mcp-probe-test-server-library.git" # Replace with your repo
+  workspaces:
+    - name: shared-data
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
