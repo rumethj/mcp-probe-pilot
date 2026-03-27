@@ -490,6 +490,18 @@ class MCPProbeOrchestrator:
             self.test_dependencies.extend(new_deps)
             logger.info("Added %d step-generation dependencies: %s", len(new_deps), new_deps)
 
+        req_file = output_dir / "requirements.txt"
+        if self.test_dependencies:
+            req_file.write_text(
+                "\n".join(self.test_dependencies) + "\n", encoding="utf-8",
+            )
+            logger.info(
+                "Wrote %d test dependencies to %s",
+                len(self.test_dependencies), req_file,
+            )
+        elif req_file.exists():
+            req_file.unlink()
+
         logger.info(
             "Step implementation complete: %d generated, %d skipped, %d errors",
             result.steps_generated,
