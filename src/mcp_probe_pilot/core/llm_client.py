@@ -15,7 +15,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 import os
 
 DEFAULT_CONFIG = {
-    "model": "gemini-2.5-flash",
+    "model": "gemini-3-flash-preview", # gemini-2.5-flash, gemini-3.1-pro-preview
     "temperature": 0.2,
     "max_output_tokens": 65536,
     "api_key": os.getenv("GEMINI_API_KEY"),
